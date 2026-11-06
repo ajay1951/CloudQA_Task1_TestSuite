@@ -1,0 +1,10 @@
+﻿Selenium.WebDriver
+Selenium.WebDriver.ChromeDriver
+Selenium.Support
+NUnit
+NUnit3TestAdapter
+Microsoft.NET.Test.Sdk
+Microsoft.Extensions.Configuration
+Microsoft.Extensions.Configuration.Json
+Microsoft.Extensions.Configuration.CommandLine
+Microsoft.Extensions.Configuration.EnvironmentVariables
