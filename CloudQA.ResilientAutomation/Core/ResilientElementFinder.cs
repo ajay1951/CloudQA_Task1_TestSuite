@@ -163,16 +163,17 @@ namespace CloudQA.ResilientAutomation.Core
 
         /// <summary>
         /// Locates a text box in a single browser-side roundtrip using JavaScript.
-        /// Evaluates attributes, labels, and siblings in ~1ms without chatty HTTP requests.
+        /// Safely handles both IWebElement contexts and IWebDriver contexts without illegal argument types.
         /// </summary>
         public IWebElement? FindTextBox(ISearchContext context, string semanticLabel)
         {
             try
             {
                 var aliases = GetFieldAliases(semanticLabel).Select(a => a.ToLowerInvariant()).ToArray();
+                var rootElement = context as IWebElement;
 
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const aliases = arguments[1];
                     const inputs = Array.from(root.querySelectorAll(""input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea""));
                     if (inputs.length === 0) return null;
@@ -222,7 +223,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return inputs.length === 1 ? inputs[0] : null;
                 ";
 
-                return _js.ExecuteScript(script, context, aliases) as IWebElement;
+                return _js.ExecuteScript(script, (object?)rootElement, aliases) as IWebElement;
             }
             catch (StaleElementReferenceException)
             {
@@ -237,8 +238,10 @@ namespace CloudQA.ResilientAutomation.Core
         {
             try
             {
+                var rootElement = context as IWebElement;
+
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const opt = (arguments[1] || '').trim().toLowerCase();
                     const radios = Array.from(root.querySelectorAll(""input[type='radio']""));
                     if (radios.length === 0) return null;
@@ -276,7 +279,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return radios[0];
                 ";
 
-                return _js.ExecuteScript(script, context, optionText) as IWebElement;
+                return _js.ExecuteScript(script, (object?)rootElement, optionText) as IWebElement;
             }
             catch (StaleElementReferenceException)
             {
@@ -291,8 +294,10 @@ namespace CloudQA.ResilientAutomation.Core
         {
             try
             {
+                var rootElement = context as IWebElement;
+
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const labelText = (arguments[1] || '').toLowerCase();
                     const selects = Array.from(root.querySelectorAll('select'));
                     if (selects.length === 0) return null;
@@ -337,7 +342,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return selects[0];
                 ";
 
-                return _js.ExecuteScript(script, context, semanticLabel) as IWebElement;
+                return _js.ExecuteScript(script, (object?)rootElement, semanticLabel) as IWebElement;
             }
             catch (StaleElementReferenceException)
             {
@@ -352,8 +357,10 @@ namespace CloudQA.ResilientAutomation.Core
         {
             try
             {
+                var rootElement = context as IWebElement;
+
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const labelText = (arguments[1] || '').trim().toLowerCase();
                     const boxes = Array.from(root.querySelectorAll(""input[type='checkbox']""));
                     if (boxes.length === 0) return null;
@@ -392,7 +399,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return null;
                 ";
 
-                return _js.ExecuteScript(script, context, checkboxLabel) as IWebElement;
+                return _js.ExecuteScript(script, (object?)rootElement, checkboxLabel) as IWebElement;
             }
             catch (StaleElementReferenceException)
             {
@@ -404,8 +411,10 @@ namespace CloudQA.ResilientAutomation.Core
         {
             try
             {
+                var rootElement = context as IWebElement;
+
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const content = arguments[1];
                     const editable = root.querySelector(""div.note-editable, div[contenteditable='true'], .wysiwyg-editor"");
                     if (editable) {
@@ -417,7 +426,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return false;
                 ";
 
-                bool filled = Convert.ToBoolean(_js.ExecuteScript(script, context, content));
+                bool filled = Convert.ToBoolean(_js.ExecuteScript(script, (object?)rootElement, content));
                 if (filled) return true;
 
                 var textarea = FindTextBox(context, semanticLabel);
@@ -437,8 +446,10 @@ namespace CloudQA.ResilientAutomation.Core
         {
             try
             {
+                var rootElement = context as IWebElement;
+
                 const string script = @"
-                    const root = arguments[0];
+                    const root = arguments[0] || document;
                     const btns = Array.from(root.querySelectorAll(""button, input[type='submit'], input[type='button'], a.btn""));
                     const keywords = ['submit', 'save', 'send', 'register', 'done'];
                     for (const b of btns) {
@@ -450,7 +461,7 @@ namespace CloudQA.ResilientAutomation.Core
                     return btns[0] || null;
                 ";
 
-                return _js.ExecuteScript(script, context) as IWebElement;
+                return _js.ExecuteScript(script, (object?)rootElement) as IWebElement;
             }
             catch (StaleElementReferenceException)
             {

@@ -73,6 +73,10 @@ namespace CloudQA.ResilientAutomation.Tests
                     }
                 }
                 catch (StaleElementReferenceException) { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ⚠ Shadow DOM Form [#{s + 1}] Error: {ex.Message}");
+                }
             }
 
             // 2. Process iFrames Encapsulated Inside Shadow Roots
@@ -94,10 +98,13 @@ namespace CloudQA.ResilientAutomation.Tests
                         if (result.AllThreeFieldsVerified) coreFieldsVerified++;
                     }
                 }
-                catch (StaleElementReferenceException) { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ⚠ Shadow iFrame Error: {ex.Message}");
+                }
                 finally
                 {
-                    _driver.SwitchTo().DefaultContent();
+                    try { _driver.SwitchTo().DefaultContent(); } catch { }
                 }
             }
 
@@ -134,22 +141,31 @@ namespace CloudQA.ResilientAutomation.Tests
                         var innerList = _driver.FindElements(By.TagName("iframe"));
                         if (j >= innerList.Count) break;
 
-                        _driver.SwitchTo().Frame(innerList[j]);
-                        var innerPage = new PracticeFormPage(_driver, _settings.TimeoutSeconds);
-                        var innerResult = innerPage.FillAndVerifyThreeFields($"{frameLabel} -> Nested iFrame [{j}]", fName, gender, state);
-                        if (innerResult.FormCompleted)
+                        try
                         {
-                            totalProcessed++;
-                            if (innerResult.AllThreeFieldsVerified) coreFieldsVerified++;
+                            _driver.SwitchTo().Frame(innerList[j]);
+                            var innerPage = new PracticeFormPage(_driver, _settings.TimeoutSeconds);
+                            var innerResult = innerPage.FillAndVerifyThreeFields($"{frameLabel} -> Nested iFrame [{j}]", fName, gender, state);
+                            if (innerResult.FormCompleted)
+                            {
+                                totalProcessed++;
+                                if (innerResult.AllThreeFieldsVerified) coreFieldsVerified++;
+                            }
                         }
-
-                        _driver.SwitchTo().ParentFrame();
+                        catch { }
+                        finally
+                        {
+                            try { _driver.SwitchTo().ParentFrame(); } catch { }
+                        }
                     }
                 }
-                catch (StaleElementReferenceException) { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ⚠ iFrame Error: {ex.Message}");
+                }
                 finally
                 {
-                    _driver.SwitchTo().DefaultContent();
+                    try { _driver.SwitchTo().DefaultContent(); } catch { }
                 }
             }
 
