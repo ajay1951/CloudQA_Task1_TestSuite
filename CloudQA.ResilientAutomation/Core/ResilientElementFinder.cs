@@ -73,6 +73,153 @@ namespace CloudQA.ResilientAutomation.Core
         {
             var sw = Stopwatch.StartNew();
             var aliases = GetFieldAliases(semanticLabel);
+
+            // Fast Single-Pass DOM Evaluation via In-Browser Engine (<15ms instead of hundreds of HTTP roundtrips)
+            try
+            {
+                const string script = @"
+                    const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
+                    const aliases = arguments[1];
+
+                    function norm(s) {
+                        if (!s) return '';
+                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
+                    }
+
+                    function matchText(text, target) {
+                        const nText = norm(text);
+                        const nTarget = norm(target);
+                        if (!nText || !nTarget) return false;
+                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
+                    }
+
+                    const rawInputs = Array.from(root.querySelectorAll(""input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea""));
+                    const inputs = rawInputs.filter(el => {
+                        if (el.disabled) return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                        return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+                    });
+
+                    if (inputs.length === 0) return null;
+
+                    const labels = Array.from(root.querySelectorAll('label')).filter(l => {
+                        const style = window.getComputedStyle(l);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    });
+
+                    const candidates = [];
+
+                    for (const input of inputs) {
+                        let score = 0;
+                        const strategies = [];
+                        const id = (input.id || '').trim();
+                        const name = (input.name || '').trim();
+                        const ph = (input.placeholder || '').trim();
+                        const aria = (input.getAttribute('aria-label') || '').trim();
+                        const auto = (input.autocomplete || '').trim();
+
+                        // 1. Explicit label[for='id']
+                        if (id) {
+                            const expl = labels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a)));
+                            if (expl) {
+                                score += 100;
+                                strategies.push('Label[for=\'' + id + '\'] (\'' + expl.textContent.trim() + '\')');
+                            }
+                        }
+
+                        // 2. Enclosing label
+                        const enclosing = labels.find(l => aliases.some(a => matchText(l.textContent, a)) && l.contains(input));
+                        if (enclosing) {
+                            score += 90;
+                            strategies.push('EnclosingLabel (\'' + enclosing.textContent.trim() + '\')');
+                        }
+
+                        // 3. Container proximity (.form-group, .row, .field)
+                        const matchingNearby = labels.find(l => aliases.some(a => matchText(l.textContent, a)));
+                        if (matchingNearby) {
+                            const container = matchingNearby.closest('.form-group, .form-row, .row, .field, [class*=""group""], div');
+                            if (container && container.contains(input)) {
+                                score += 75;
+                                strategies.push('ContainerProximity (\'' + matchingNearby.textContent.trim() + '\')');
+                            }
+                        }
+
+                        // 4. Accessible attributes
+                        if (aliases.some(a => matchText(aria, a))) {
+                            score += 65;
+                            strategies.push('aria-label=\'' + aria + '\'');
+                        }
+                        if (aliases.some(a => matchText(auto, a))) {
+                            score += 60;
+                            strategies.push('autocomplete=\'' + auto + '\'');
+                        }
+
+                        // 5. Semantic attributes
+                        if (aliases.some(a => matchText(ph, a))) {
+                            score += 45;
+                            strategies.push('placeholder=\'' + ph + '\'');
+                        }
+                        if (aliases.some(a => matchText(name, a))) {
+                            score += 40;
+                            strategies.push('name=\'' + name + '\'');
+                        }
+                        if (aliases.some(a => matchText(id, a))) {
+                            score += 35;
+                            strategies.push('id=\'' + id + '\'');
+                        }
+
+                        if (score > 0) {
+                            candidates.push({
+                                element: input,
+                                score: score,
+                                strategy: strategies.join(' + '),
+                                details: '<input tag=\'' + input.tagName.toLowerCase() + '\' id=\'' + id + '\' name=\'' + name + '\' ph=\'' + ph + '\'>'
+                            });
+                        }
+                    }
+
+                    if (candidates.length === 0) return null;
+                    candidates.sort((a, b) => b.score - a.score);
+
+                    if (candidates.length > 1 && candidates[1].score === candidates[0].score && candidates[0].score >= 50) {
+                        return {
+                            ambiguous: true,
+                            score: candidates[0].score,
+                            details: candidates[0].details + ' vs ' + candidates[1].details
+                        };
+                    }
+
+                    return {
+                        element: candidates[0].element,
+                        score: candidates[0].score,
+                        strategy: candidates[0].strategy,
+                        details: candidates[0].details
+                    };
+                ";
+
+                var res = _js.ExecuteScript(script, context as IWebElement, aliases);
+                if (res is IDictionary<string, object> dict)
+                {
+                    sw.Stop();
+                    if (dict.ContainsKey("ambiguous") && Convert.ToBoolean(dict["ambiguous"]))
+                    {
+                        LogDiagnostic($"[FindTextBox: '{semanticLabel}'] Rejected ambiguous match: 2 candidates tied with score {dict["score"]}. ({dict["details"]})");
+                        return null;
+                    }
+
+                    if (dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedInput)
+                    {
+                        LogDiagnostic($"[FindTextBox: '{semanticLabel}'] Selected candidate with score {dict["score"]} via {dict["strategy"]}. Time: {sw.ElapsedMilliseconds}ms. Details: {dict["details"]}");
+                        return matchedInput;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic($"[FindTextBox: '{semanticLabel}'] Fast evaluation fallback triggered: {ex.Message}");
+            }
+
             var candidates = new List<CandidateMatch<IWebElement>>();
 
             var allInputs = context.FindElements(By.CssSelector("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea"))
@@ -243,6 +390,111 @@ namespace CloudQA.ResilientAutomation.Core
         {
             var sw = Stopwatch.StartNew();
 
+            // Fast Single-Pass DOM Evaluation via In-Browser Engine
+            try
+            {
+                const string script = @"
+                    const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
+                    const optionText = arguments[1];
+                    const groupLabel = arguments[2];
+
+                    function norm(s) {
+                        if (!s) return '';
+                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
+                    }
+
+                    function matchText(text, target) {
+                        const nText = norm(text);
+                        const nTarget = norm(target);
+                        if (!nText || !nTarget) return false;
+                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
+                    }
+
+                    const rawRadios = Array.from(root.querySelectorAll(""input[type='radio']""));
+                    const radios = rawRadios.filter(r => {
+                        if (r.disabled) return false;
+                        const style = window.getComputedStyle(r);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    });
+
+                    if (radios.length === 0) return null;
+
+                    let pool = radios.filter(r => matchText(r.name, groupLabel) || matchText(r.id, groupLabel));
+                    if (pool.length === 0) pool = radios;
+
+                    const labels = Array.from(root.querySelectorAll('label'));
+                    const candidates = [];
+
+                    for (const radio of pool) {
+                        let score = 0;
+                        const strategies = [];
+                        const val = (radio.value || '').trim();
+                        const id = (radio.id || '').trim();
+                        const aria = (radio.getAttribute('aria-label') || '').trim();
+
+                        if (matchText(val, optionText)) {
+                            score += 80;
+                            strategies.push('value=\'' + val + '\'');
+                        }
+                        if (matchText(aria, optionText)) {
+                            score += 80;
+                            strategies.push('aria-label=\'' + aria + '\'');
+                        }
+                        if (matchText(id, optionText)) {
+                            score += 60;
+                            strategies.push('id=\'' + id + '\'');
+                        }
+
+                        let visibleText = '';
+                        if (radio.nextSibling && radio.nextSibling.nodeType === 3) visibleText += ' ' + radio.nextSibling.textContent;
+                        if (radio.nextElementSibling) visibleText += ' ' + radio.nextElementSibling.innerText;
+                        if (radio.parentElement) visibleText += ' ' + radio.parentElement.innerText;
+                        visibleText = visibleText.trim();
+
+                        if (matchText(visibleText, optionText)) {
+                            score += 100;
+                            strategies.push('VisibleOptionText (\'' + visibleText + '\')');
+                        }
+
+                        if (id) {
+                            const lbl = labels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && matchText(l.textContent, optionText));
+                            if (lbl) {
+                                score += 90;
+                                strategies.push('Label[for=\'' + id + '\'] (\'' + lbl.textContent.trim() + '\')');
+                            }
+                        }
+
+                        if (score > 0) {
+                            candidates.push({
+                                element: radio,
+                                score: score,
+                                strategy: strategies.join(' + ')
+                            });
+                        }
+                    }
+
+                    if (candidates.length === 0) return null;
+                    candidates.sort((a, b) => b.score - a.score);
+                    return {
+                        element: candidates[0].element,
+                        score: candidates[0].score,
+                        strategy: candidates[0].strategy
+                    };
+                ";
+
+                var res = _js.ExecuteScript(script, context as IWebElement, optionText, groupLabel);
+                if (res is IDictionary<string, object> dict && dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedRadio)
+                {
+                    sw.Stop();
+                    LogDiagnostic($"[FindRadioButton: '{optionText}'] Selected radio with score {dict["score"]} via {dict["strategy"]}. Time: {sw.ElapsedMilliseconds}ms");
+                    return matchedRadio;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic($"[FindRadioButton: '{optionText}'] Fast evaluation fallback triggered: {ex.Message}");
+            }
+
             // 1. Locate group radios: radios under a container with 'Gender' or having name='gender'
             var allRadios = context.FindElements(By.CssSelector("input[type='radio']")).Where(r => r.Displayed).ToList();
             if (!allRadios.Any())
@@ -374,6 +626,116 @@ namespace CloudQA.ResilientAutomation.Core
         {
             var sw = Stopwatch.StartNew();
             var aliases = new[] { semanticLabel, "state", "province", "region" };
+
+            // Fast Single-Pass DOM Evaluation via In-Browser Engine
+            try
+            {
+                const string script = @"
+                    const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
+                    const aliases = arguments[1];
+
+                    function norm(s) {
+                        if (!s) return '';
+                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
+                    }
+
+                    function matchText(text, target) {
+                        const nText = norm(text);
+                        const nTarget = norm(target);
+                        if (!nText || !nTarget) return false;
+                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
+                    }
+
+                    const rawSelects = Array.from(root.querySelectorAll('select'));
+                    const selects = rawSelects.filter(s => {
+                        if (s.disabled) return false;
+                        const style = window.getComputedStyle(s);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    });
+
+                    if (selects.length === 0) return null;
+
+                    const labels = Array.from(root.querySelectorAll('label')).filter(l => {
+                        const style = window.getComputedStyle(l);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    });
+
+                    const candidates = [];
+
+                    for (const select of selects) {
+                        let score = 0;
+                        const strategies = [];
+                        const id = (select.id || '').trim();
+                        const name = (select.name || '').trim();
+                        const aria = (select.getAttribute('aria-label') || '').trim();
+
+                        if (id) {
+                            const lbl = labels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a)));
+                            if (lbl) {
+                                score += 100;
+                                strategies.push('Label[for=\'' + id + '\'] (\'' + lbl.textContent.trim() + '\')');
+                            }
+                        }
+
+                        const stateLabel = labels.find(l => aliases.some(a => matchText(l.textContent, a)));
+                        if (stateLabel) {
+                            const container = stateLabel.closest('.form-group, .row, .field, div');
+                            if (container && container.contains(select)) {
+                                score += 85;
+                                strategies.push('ContainerProximity (\'' + stateLabel.textContent.trim() + '\')');
+                            }
+                        }
+
+                        if (aliases.some(a => matchText(aria, a))) {
+                            score += 50;
+                            strategies.push('aria-label=\'' + aria + '\'');
+                        }
+                        if (aliases.some(a => matchText(name, a))) {
+                            score += 45;
+                            strategies.push('name=\'' + name + '\'');
+                        }
+                        if (aliases.some(a => matchText(id, a))) {
+                            score += 40;
+                            strategies.push('id=\'' + id + '\'');
+                        }
+
+                        if (score > 0) {
+                            candidates.push({
+                                element: select,
+                                score: score,
+                                strategy: strategies.join(' + ')
+                            });
+                        }
+                    }
+
+                    if (candidates.length === 0) {
+                        if (selects.length === 1) {
+                            return { element: selects[0], score: 50, strategy: 'SingleAvailableDropdown' };
+                        }
+                        return null;
+                    }
+
+                    candidates.sort((a, b) => b.score - a.score);
+                    return {
+                        element: candidates[0].element,
+                        score: candidates[0].score,
+                        strategy: candidates[0].strategy
+                    };
+                ";
+
+                var res = _js.ExecuteScript(script, context as IWebElement, aliases);
+                if (res is IDictionary<string, object> dict && dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedSelect)
+                {
+                    sw.Stop();
+                    LogDiagnostic($"[FindDropdown: '{semanticLabel}'] Selected dropdown with score {dict["score"]} via {dict["strategy"]}. Time: {sw.ElapsedMilliseconds}ms");
+                    return matchedSelect;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic($"[FindDropdown: '{semanticLabel}'] Fast evaluation fallback triggered: {ex.Message}");
+            }
+
             var selects = context.FindElements(By.CssSelector("select")).Where(s => s.Displayed && s.Enabled).ToList();
 
             if (!selects.Any())
