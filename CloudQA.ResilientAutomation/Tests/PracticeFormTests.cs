@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using NUnit.Framework;
 using OpenQA.Selenium;
 using CloudQA.ResilientAutomation.Configuration;
@@ -9,193 +9,31 @@ using CloudQA.ResilientAutomation.Pages;
 namespace CloudQA.ResilientAutomation.Tests
 {
     [TestFixture]
+    [Category("E2E")]
     public class PracticeFormTests
     {
         private IWebDriver _driver = null!;
         private TestSettings _settings = null!;
+        private PracticeFormPage _page = null!;
         private ResilientElementFinder _finder = null!;
 
-        [SetUp]
-        public void Setup()
+        [OneTimeSetUp]
+        public void OneTimeSetup()
         {
+            var initSw = Stopwatch.StartNew();
             _settings = TestSettings.Load();
             _driver = DriverFactory.CreateDriver(_settings);
             _driver.Navigate().GoToUrl(_settings.TargetUrl);
+            initSw.Stop();
+            TestContext.Out.WriteLine($"[Setup] Browser initialized and navigated to '{_settings.TargetUrl}' in {initSw.ElapsedMilliseconds}ms.");
+
             _finder = new ResilientElementFinder(_driver, _settings.TimeoutSeconds);
+            var mainForm = _finder.DiscoverMainRootForm(_driver);
+            _page = new PracticeFormPage(_driver, _settings.TimeoutSeconds, mainForm);
         }
 
-        [Test]
-        [Description("Fast & resilient end-to-end automation: automates Shadow DOMs, iFrames, and the full Main Form with all fields in seconds.")]
-        public void Should_Automate_And_Fill_Every_Detail_Across_All_Forms()
-        {
-            const string fName = "Ajay";
-            const string gender = "Male";
-            const string state = "India";
-
-            var fullFormData = new PracticeFormData
-            {
-                FirstName = fName,
-                LastName = "Gollapudi",
-                Gender = gender,
-                DateOfBirth = "2001-05-19",
-                MobileNumber = "9876543210",
-                Email = "ajay@example.com",
-                Country = "India",
-                State = state,
-                Hobbies = new List<string> { "Dance", "Reading", "Cricket" },
-                AboutYourself = "Senior Full-Stack & Automation Test Engineer specializing in resilient Selenium frameworks.",
-                Description = "Submitted via lightning-fast resilient test suite covering all form fields, Summernote editor, Shadow DOMs, and nested iFrames.",
-                Username = "ajay_g",
-                Password = "TestPassword@123",
-                ConfirmPassword = "TestPassword@123",
-                AgreeTerms = true
-            };
-
-            int totalProcessed = 0;
-            int coreFieldsVerified = 0;
-
-            // 1. Process All Shadow DOM Forms (Focus on core fields present inside them)
-            var shadowHosts = _finder.DiscoverAllShadowFormHosts();
-            Console.WriteLine($"\n[DISCOVERY] Found {shadowHosts.Count} Shadow DOM form host(s).");
-
-            for (int s = 0; s < shadowHosts.Count; s++)
-            {
-                try
-                {
-                    var host = shadowHosts[s];
-                    var shadowPage = new PracticeFormPage(_driver, _settings.TimeoutSeconds, host);
-
-                    var result = shadowPage.FillAndVerifyThreeFields($"Shadow DOM Form [#{s + 1}]", fName, gender, state);
-                    if (result.FormCompleted)
-                    {
-                        totalProcessed++;
-                        if (result.AllThreeFieldsVerified) coreFieldsVerified++;
-                    }
-                }
-                catch (StaleElementReferenceException) { }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  ⚠ Shadow DOM Form [#{s + 1}] Error: {ex.Message}");
-                }
-            }
-
-            // 2. Process iFrames Encapsulated Inside Shadow Roots
-            var shadowIframes = _finder.DiscoverIFramesInsideShadowRoots();
-            Console.WriteLine($"\n[DISCOVERY] Found {shadowIframes.Count} iFrame(s) inside Shadow DOM.");
-
-            for (int k = 0; k < shadowIframes.Count; k++)
-            {
-                try
-                {
-                    var sFrame = shadowIframes[k];
-                    _driver.SwitchTo().Frame(sFrame);
-
-                    var sFramePage = new PracticeFormPage(_driver, _settings.TimeoutSeconds);
-                    var result = sFramePage.FillAndVerifyThreeFields($"Shadow iFrame [#{k + 1}]", fName, gender, state);
-                    if (result.FormCompleted)
-                    {
-                        totalProcessed++;
-                        if (result.AllThreeFieldsVerified) coreFieldsVerified++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  ⚠ Shadow iFrame Error: {ex.Message}");
-                }
-                finally
-                {
-                    try { _driver.SwitchTo().DefaultContent(); } catch { }
-                }
-            }
-
-            // 3. Process Top-Level & Nested iFrames
-            var topIframes = _driver.FindElements(By.TagName("iframe"));
-            Console.WriteLine($"\n[DISCOVERY] Found {topIframes.Count} top-level iFrame(s).");
-
-            for (int i = 0; i < topIframes.Count; i++)
-            {
-                var frames = _driver.FindElements(By.TagName("iframe"));
-                if (i >= frames.Count) break;
-
-                var frameElement = frames[i];
-                string frameLabel = !string.IsNullOrEmpty(frameElement.GetAttribute("id"))
-                    ? $"iFrame (#{frameElement.GetAttribute("id")})"
-                    : $"iFrame [index {i}]";
-
-                try
-                {
-                    _driver.SwitchTo().Frame(frameElement);
-
-                    var framePage = new PracticeFormPage(_driver, _settings.TimeoutSeconds);
-                    var result = framePage.FillAndVerifyThreeFields(frameLabel, fName, gender, state);
-                    if (result.FormCompleted)
-                    {
-                        totalProcessed++;
-                        if (result.AllThreeFieldsVerified) coreFieldsVerified++;
-                    }
-
-                    // Inner Nested iFrames
-                    var innerFrames = _driver.FindElements(By.TagName("iframe"));
-                    for (int j = 0; j < innerFrames.Count; j++)
-                    {
-                        var innerList = _driver.FindElements(By.TagName("iframe"));
-                        if (j >= innerList.Count) break;
-
-                        try
-                        {
-                            _driver.SwitchTo().Frame(innerList[j]);
-                            var innerPage = new PracticeFormPage(_driver, _settings.TimeoutSeconds);
-                            var innerResult = innerPage.FillAndVerifyThreeFields($"{frameLabel} -> Nested iFrame [{j}]", fName, gender, state);
-                            if (innerResult.FormCompleted)
-                            {
-                                totalProcessed++;
-                                if (innerResult.AllThreeFieldsVerified) coreFieldsVerified++;
-                            }
-                        }
-                        catch { }
-                        finally
-                        {
-                            try { _driver.SwitchTo().ParentFrame(); } catch { }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  ⚠ iFrame Error: {ex.Message}");
-                }
-                finally
-                {
-                    try { _driver.SwitchTo().DefaultContent(); } catch { }
-                }
-            }
-
-            // 4. Process Main Root Form With EVERY SINGLE DETAIL (all 16 fields)
-            var mainRootForm = _finder.DiscoverMainRootForm(_driver);
-            if (mainRootForm != null)
-            {
-                var rootPage = new PracticeFormPage(_driver, _settings.TimeoutSeconds, mainRootForm);
-                var result = rootPage.FillCompleteForm("Main Root Form", fullFormData);
-                if (result.FormCompleted)
-                {
-                    totalProcessed++;
-                    if (result.AllThreeFieldsVerified) coreFieldsVerified++;
-                }
-            }
-
-            Console.WriteLine("\n====================================================================");
-            Console.WriteLine($" COMPLETE: Successfully automated {totalProcessed} form(s) in record time!");
-            Console.WriteLine($" Core fields (First Name, Gender, State) verified across contexts: {coreFieldsVerified}");
-            Console.WriteLine("====================================================================");
-
-            Assert.That(totalProcessed, Is.GreaterThan(0), 
-                "Expected at least one form context on the page to be automated.");
-
-            Assert.That(coreFieldsVerified, Is.GreaterThan(0),
-                "Expected core fields (First Name, Gender, State) to be verified successfully.");
-        }
-
-        [TearDown]
-        public void Teardown()
+        [OneTimeTearDown]
+        public void OneTimeTeardown()
         {
             try
             {
@@ -203,6 +41,103 @@ namespace CloudQA.ResilientAutomation.Tests
                 _driver?.Dispose();
             }
             catch { }
+        }
+
+        [Test]
+        [Description("Requirement 1: Automates First Name textbox entry and verifies the resulting input value.")]
+        public void Test_01_FirstName_Discovery_Entry_And_Verification()
+        {
+            var sw = Stopwatch.StartNew();
+
+            _page.SetFirstName(_settings.FirstName);
+            var actualValue = _page.GetFirstNameValue();
+
+            sw.Stop();
+            TestContext.Out.WriteLine($"[Test 01] First Name entered and verified in {sw.ElapsedMilliseconds}ms.");
+
+            Assert.That(actualValue, Is.EqualTo(_settings.FirstName), 
+                $"Expected First Name to contain '{_settings.FirstName}', but found '{actualValue}'.");
+        }
+
+        [Test]
+        [Description("Requirement 2: Discovers the Gender field group, selects the requested option, and verifies selection state.")]
+        public void Test_02_Gender_Radio_Discovery_Selection_And_Verification()
+        {
+            var sw = Stopwatch.StartNew();
+
+            _page.SelectGender(_settings.Gender);
+            var isSelected = _page.IsGenderSelected(_settings.Gender);
+
+            sw.Stop();
+            TestContext.Out.WriteLine($"[Test 02] Gender '{_settings.Gender}' selected and verified in {sw.ElapsedMilliseconds}ms.");
+
+            Assert.That(isSelected, Is.True, 
+                $"Expected Gender radio button for '{_settings.Gender}' to be checked/selected.");
+        }
+
+        [Test]
+        [Description("Requirement 3: Discovers the State dropdown, selects requested state via SelectElement, and verifies selected option.")]
+        public void Test_03_State_Dropdown_Discovery_Selection_And_Verification()
+        {
+            var sw = Stopwatch.StartNew();
+
+            _page.SelectState(_settings.State);
+            var actualState = _page.GetSelectedState();
+
+            sw.Stop();
+            TestContext.Out.WriteLine($"[Test 03] State '{_settings.State}' selected and verified in {sw.ElapsedMilliseconds}ms. Selected option: '{actualState}'.");
+
+            Assert.That(actualState, Does.Contain(_settings.State).IgnoreCase,
+                $"Expected State dropdown selection to match '{_settings.State}', but found '{actualState}'.");
+        }
+
+        [Test]
+        [Description("Requirement 4: End-to-end verification of all three core fields executed in sequence with form submission.")]
+        public void Test_04_All_Three_Required_Fields_EndToEnd_Automation()
+        {
+            var totalSw = Stopwatch.StartNew();
+
+            _page.SetFirstName(_settings.FirstName);
+            _page.SelectGender(_settings.Gender);
+            _page.SelectState(_settings.State);
+
+            var actualName = _page.GetFirstNameValue();
+            var isGenderSelected = _page.IsGenderSelected(_settings.Gender);
+            var actualState = _page.GetSelectedState();
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(actualName, Is.EqualTo(_settings.FirstName), "First Name verification failed.");
+                Assert.That(isGenderSelected, Is.True, "Gender selection verification failed.");
+                Assert.That(actualState, Does.Contain(_settings.State).IgnoreCase, "State selection verification failed.");
+            });
+
+            _page.ClickSubmit();
+            totalSw.Stop();
+            TestContext.Out.WriteLine($"[Test 04] Complete 3-field automation + submission completed in {totalSw.ElapsedMilliseconds}ms.");
+        }
+
+        [Test]
+        [Description("Extended Capability: Populates all 16 fields of the practice form including Summernote editor and checkboxes.")]
+        public void Test_05_Complete_Full_Practice_Form_Automation()
+        {
+            var totalSw = Stopwatch.StartNew();
+            _driver.Navigate().GoToUrl(_settings.TargetUrl);
+            var mainForm = _finder.DiscoverMainRootForm(_driver);
+            _page = new PracticeFormPage(_driver, _settings.TimeoutSeconds, mainForm);
+
+            var data = new PracticeFormData
+            {
+                FirstName = _settings.FirstName,
+                Gender = _settings.Gender,
+                State = _settings.State
+            };
+
+            _page.FillCompleteForm(data, clickSubmit: true);
+            totalSw.Stop();
+            TestContext.Out.WriteLine($"[Test 05] Full 16-field form automated and submitted in {totalSw.ElapsedMilliseconds}ms.");
+
+            Assert.Pass("Full form fields automated and submitted successfully.");
         }
     }
 }

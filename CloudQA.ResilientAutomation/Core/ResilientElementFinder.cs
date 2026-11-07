@@ -1,12 +1,27 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
+using System.Text.RegularExpressions;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Support.UI;
 
 namespace CloudQA.ResilientAutomation.Core
 {
+    public class CandidateMatch<T>
+    {
+        public T Element { get; set; } = default!;
+        public int Score { get; set; }
+        public string StrategyUsed { get; set; } = string.Empty;
+        public string ElementDetails { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Senior SDET-grade Resilient Element Finder.
+    /// Uses prioritized confidence scoring, accessibility standards, explicit waits,
+    /// rejection of ambiguous matches, and comprehensive diagnostic logging.
+    /// Does not depend on arbitrary position or hardcoded IDs/XPath.
+    /// </summary>
     public class ResilientElementFinder
     {
         private readonly IWebDriver _driver;
@@ -17,6 +32,7 @@ namespace CloudQA.ResilientAutomation.Core
         {
             _driver = driver ?? throw new ArgumentNullException(nameof(driver));
             _wait = new WebDriverWait(_driver, TimeSpan.FromSeconds(timeoutSeconds));
+            _wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(StaleElementReferenceException));
             _js = (IJavaScriptExecutor)_driver;
         }
 
@@ -31,69 +47,536 @@ namespace CloudQA.ResilientAutomation.Core
 
         public void SafeClick(IWebElement element)
         {
+            ScrollIntoCenter(element);
             try
             {
                 element.Click();
             }
             catch (WebDriverException)
             {
-                try
+                _js.ExecuteScript("arguments[0].click();", element);
+            }
+        }
+
+        #region First Name (Input / Textbox Discovery)
+
+        /// <summary>
+        /// Finds an input textbox using prioritized confidence scoring:
+        /// 1. Explicit <label for="id"> (+100)
+        /// 2. Enclosing <label> (+90)
+        /// 3. Nearby field-container association (form-group/row) (+75)
+        /// 4. Accessible attributes (aria-label, aria-labelledby, autocomplete) (+60)
+        /// 5. Semantic attributes (placeholder, name, id) (+40)
+        /// Rejects ambiguous candidates when top scores are tied without confidence separation.
+        /// </summary>
+        public IWebElement? FindTextBox(ISearchContext context, string semanticLabel)
+        {
+            var sw = Stopwatch.StartNew();
+            var aliases = GetFieldAliases(semanticLabel);
+            var candidates = new List<CandidateMatch<IWebElement>>();
+
+            var allInputs = context.FindElements(By.CssSelector("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea"))
+                                   .Where(el => el.Displayed && el.Enabled)
+                                   .ToList();
+
+            if (!allInputs.Any())
+            {
+                LogDiagnostic($"[FindTextBox: '{semanticLabel}'] No enabled, displayed text inputs found in context.");
+                return null;
+            }
+
+            var allLabels = context.FindElements(By.TagName("label")).Where(l => l.Displayed).ToList();
+
+            foreach (var input in allInputs)
+            {
+                int score = 0;
+                var strategies = new List<string>();
+
+                var id = (input.GetAttribute("id") ?? "").Trim();
+                var name = (input.GetAttribute("name") ?? "").Trim();
+                var placeholder = (input.GetAttribute("placeholder") ?? "").Trim();
+                var ariaLabel = (input.GetAttribute("aria-label") ?? "").Trim();
+                var ariaLabelledBy = (input.GetAttribute("aria-labelledby") ?? "").Trim();
+                var autocomplete = (input.GetAttribute("autocomplete") ?? "").Trim();
+
+                // 1. Explicit label association (label[for='id'])
+                if (!string.IsNullOrEmpty(id))
                 {
-                    _js.ExecuteScript("arguments[0].click();", element);
+                    var explicitLabel = allLabels.FirstOrDefault(l => 
+                        string.Equals(l.GetAttribute("for"), id, StringComparison.OrdinalIgnoreCase) &&
+                        aliases.Any(a => MatchText(l.Text, a)));
+
+                    if (explicitLabel != null)
+                    {
+                        score += 100;
+                        strategies.Add($"Label[for='{id}'] ('{explicitLabel.Text.Trim()}')");
+                    }
                 }
-                catch
+
+                // 2. Enclosing label association (<label>First Name <input/></label>)
+                var enclosingLabel = allLabels.FirstOrDefault(l =>
                 {
                     try
                     {
-                        _js.ExecuteScript("const label = arguments[0].closest('label') || arguments[0].parentElement; if(label) label.click(); else arguments[0].click();", element);
+                        return aliases.Any(a => MatchText(l.Text, a)) && l.FindElements(By.XPath(".//input | .//textarea")).Any(nested => nested.Equals(input));
+                    }
+                    catch { return false; }
+                });
+
+                if (enclosingLabel != null)
+                {
+                    score += 90;
+                    strategies.Add($"EnclosingLabel ('{enclosingLabel.Text.Trim()}')");
+                }
+
+                // 3. Nearby field container / form-group association
+                try
+                {
+                    var matchingNearbyLabel = allLabels.FirstOrDefault(l => aliases.Any(a => MatchText(l.Text, a)));
+                    if (matchingNearbyLabel != null)
+                    {
+                        var isParentRelated = Convert.ToBoolean(_js.ExecuteScript(@"
+                            let label = arguments[0];
+                            let input = arguments[1];
+                            let container = label.closest('.form-group, .form-row, .row, .field, [class*=""group""], div');
+                            return container ? container.contains(input) : false;
+                        ", matchingNearbyLabel, input));
+
+                        if (isParentRelated)
+                        {
+                            score += 75;
+                            strategies.Add($"ContainerProximity ('{matchingNearbyLabel.Text.Trim()}')");
+                        }
+                    }
+                }
+                catch { }
+
+                // 4. Accessible attributes (aria-label, autocomplete, aria-labelledby)
+                if (aliases.Any(a => MatchText(ariaLabel, a)))
+                {
+                    score += 65;
+                    strategies.Add($"aria-label='{ariaLabel}'");
+                }
+
+                if (!string.IsNullOrEmpty(ariaLabelledBy))
+                {
+                    var labelRef = allLabels.FirstOrDefault(l => string.Equals(l.GetAttribute("id"), ariaLabelledBy, StringComparison.OrdinalIgnoreCase));
+                    if (labelRef != null && aliases.Any(a => MatchText(labelRef.Text, a)))
+                    {
+                        score += 65;
+                        strategies.Add($"aria-labelledby='{ariaLabelledBy}'");
+                    }
+                }
+
+                if (semanticLabel.Equals("First Name", StringComparison.OrdinalIgnoreCase) && 
+                    (MatchText(autocomplete, "given-name") || MatchText(autocomplete, "fname")))
+                {
+                    score += 60;
+                    strategies.Add($"autocomplete='{autocomplete}'");
+                }
+
+                // 5. Semantic attributes (placeholder, name, id)
+                if (aliases.Any(a => MatchText(placeholder, a)))
+                {
+                    score += 45;
+                    strategies.Add($"placeholder='{placeholder}'");
+                }
+
+                if (aliases.Any(a => MatchText(name, a)))
+                {
+                    score += 40;
+                    strategies.Add($"name='{name}'");
+                }
+
+                if (aliases.Any(a => MatchText(id, a)))
+                {
+                    score += 35;
+                    strategies.Add($"id='{id}'");
+                }
+
+                if (score > 0)
+                {
+                    candidates.Add(new CandidateMatch<IWebElement>
+                    {
+                        Element = input,
+                        Score = score,
+                        StrategyUsed = string.Join(" + ", strategies),
+                        ElementDetails = $"<input tag='{input.TagName}' id='{id}' name='{name}' ph='{placeholder}'>"
+                    });
+                }
+            }
+
+            sw.Stop();
+
+            if (!candidates.Any())
+            {
+                LogDiagnostic($"[FindTextBox: '{semanticLabel}'] No candidate met confidence threshold. Search time: {sw.ElapsedMilliseconds}ms");
+                return null;
+            }
+
+            var ordered = candidates.OrderByDescending(c => c.Score).ToList();
+            var top = ordered.First();
+
+            // Ambiguity rejection check: If top 2 candidates have identical high scores, reject to prevent false actions
+            if (ordered.Count > 1 && ordered[1].Score == top.Score && top.Score >= 50)
+            {
+                LogDiagnostic($"[FindTextBox: '{semanticLabel}'] Rejected ambiguous match: 2 candidates tied with score {top.Score}. ({ordered[0].ElementDetails} vs {ordered[1].ElementDetails})");
+                return null;
+            }
+
+            LogDiagnostic($"[FindTextBox: '{semanticLabel}'] Selected candidate with score {top.Score} via {top.StrategyUsed}. Time: {sw.ElapsedMilliseconds}ms. Details: {top.ElementDetails}");
+            return top.Element;
+        }
+
+        #endregion
+
+        #region Gender (Radio Button Discovery)
+
+        /// <summary>
+        /// Discovers Gender radio button:
+        /// 1. Finds the Gender field group (via visible label/legend/heading text 'Gender').
+        /// 2. Discovers radio buttons inside or associated with that group.
+        /// 3. Associates each radio input with its visible option text (labels, spans, text nodes).
+        /// 4. Does not assume radio buttons have a proper HTML label element.
+        /// </summary>
+        public IWebElement? FindRadioButton(ISearchContext context, string optionText, string groupLabel = "Gender")
+        {
+            var sw = Stopwatch.StartNew();
+
+            // 1. Locate group radios: radios under a container with 'Gender' or having name='gender'
+            var allRadios = context.FindElements(By.CssSelector("input[type='radio']")).Where(r => r.Displayed).ToList();
+            if (!allRadios.Any())
+            {
+                LogDiagnostic($"[FindRadioButton: '{optionText}'] No radio buttons found in context.");
+                return null;
+            }
+
+            // Group discovery: prioritize radios sharing group name or under gender container
+            var groupRadios = allRadios.Where(r => 
+                MatchText(r.GetAttribute("name") ?? "", groupLabel) ||
+                MatchText(r.GetAttribute("id") ?? "", groupLabel)).ToList();
+
+            if (!groupRadios.Any())
+            {
+                // Fallback to searching nearby heading/label for group
+                try
+                {
+                    var groupHeader = context.FindElements(By.XPath(".//*[self::label or self::legend or self::span or self::div or self::h4 or self::h5][contains(translate(text(), 'GENDER', 'gender'), 'gender')]")).FirstOrDefault();
+                    if (groupHeader != null)
+                    {
+                        var containerRadios = groupHeader.FindElements(By.XPath("following::input[@type='radio'][position() <= 4]")).ToList();
+                        if (containerRadios.Any()) groupRadios = containerRadios;
+                    }
+                }
+                catch { }
+            }
+
+            var pool = groupRadios.Any() ? groupRadios : allRadios;
+            var candidates = new List<CandidateMatch<IWebElement>>();
+
+            foreach (var radio in pool)
+            {
+                int score = 0;
+                var strategies = new List<string>();
+
+                var val = (radio.GetAttribute("value") ?? "").Trim();
+                var id = (radio.GetAttribute("id") ?? "").Trim();
+                var ariaLabel = (radio.GetAttribute("aria-label") ?? "").Trim();
+
+                // A. Direct value or aria-label match (+80)
+                if (MatchText(val, optionText))
+                {
+                    score += 80;
+                    strategies.Add($"value='{val}'");
+                }
+
+                if (MatchText(ariaLabel, optionText))
+                {
+                    score += 80;
+                    strategies.Add($"aria-label='{ariaLabel}'");
+                }
+
+                if (MatchText(id, optionText))
+                {
+                    score += 60;
+                    strategies.Add($"id='{id}'");
+                }
+
+                // B. Sibling text & text nodes via JavaScript (handles bare text nodes without <label>) (+100)
+                try
+                {
+                    var visibleText = _js.ExecuteScript(@"
+                        let r = arguments[0];
+                        let t = '';
+                        if (r.nextSibling && r.nextSibling.nodeType === 3) t += ' ' + r.nextSibling.textContent;
+                        if (r.nextElementSibling) t += ' ' + r.nextElementSibling.innerText;
+                        if (r.parentElement) t += ' ' + r.parentElement.innerText;
+                        return t.trim();
+                    ", radio)?.ToString() ?? "";
+
+                    if (MatchOptionText(visibleText, optionText))
+                    {
+                        score += 100;
+                        strategies.Add($"VisibleOptionText ('{visibleText}')");
+                    }
+                }
+                catch { }
+
+                // C. Explicit <label for="id"> (+90)
+                if (!string.IsNullOrEmpty(id))
+                {
+                    try
+                    {
+                        var label = context.FindElements(By.CssSelector($"label[for='{id}']")).FirstOrDefault();
+                        if (label != null && MatchOptionText(label.Text, optionText))
+                        {
+                            score += 90;
+                            strategies.Add($"Label[for='{id}'] ('{label.Text.Trim()}')");
+                        }
                     }
                     catch { }
                 }
+
+                if (score > 0)
+                {
+                    candidates.Add(new CandidateMatch<IWebElement>
+                    {
+                        Element = radio,
+                        Score = score,
+                        StrategyUsed = string.Join(" + ", strategies),
+                        ElementDetails = $"<input type='radio' id='{id}' value='{val}'>"
+                    });
+                }
             }
+
+            sw.Stop();
+
+            if (!candidates.Any())
+            {
+                LogDiagnostic($"[FindRadioButton: '{optionText}'] No radio candidate matched criteria. Time: {sw.ElapsedMilliseconds}ms");
+                return null;
+            }
+
+            var best = candidates.OrderByDescending(c => c.Score).First();
+            LogDiagnostic($"[FindRadioButton: '{optionText}'] Selected radio with score {best.Score} via {best.StrategyUsed}. Time: {sw.ElapsedMilliseconds}ms");
+            return best.Element;
         }
 
-        #region Form & Embedded Context Discovery
+        #endregion
+
+        #region State (Dropdown Discovery & Interaction)
+
+        /// <summary>
+        /// Locates the State dropdown (<select>) via semantic label association, enclosing containers, or attributes.
+        /// Interacts using Selenium SelectElement.
+        /// </summary>
+        public IWebElement? FindDropdown(ISearchContext context, string semanticLabel)
+        {
+            var sw = Stopwatch.StartNew();
+            var aliases = new[] { semanticLabel, "state", "province", "region" };
+            var selects = context.FindElements(By.CssSelector("select")).Where(s => s.Displayed && s.Enabled).ToList();
+
+            if (!selects.Any())
+            {
+                LogDiagnostic($"[FindDropdown: '{semanticLabel}'] No displayed, enabled <select> elements in context.");
+                return null;
+            }
+
+            var candidates = new List<CandidateMatch<IWebElement>>();
+            var allLabels = context.FindElements(By.TagName("label")).Where(l => l.Displayed).ToList();
+
+            foreach (var select in selects)
+            {
+                int score = 0;
+                var strategies = new List<string>();
+
+                var id = (select.GetAttribute("id") ?? "").Trim();
+                var name = (select.GetAttribute("name") ?? "").Trim();
+                var ariaLabel = (select.GetAttribute("aria-label") ?? "").Trim();
+
+                // 1. Explicit <label for="id"> (+100)
+                if (!string.IsNullOrEmpty(id))
+                {
+                    var label = allLabels.FirstOrDefault(l => 
+                        string.Equals(l.GetAttribute("for"), id, StringComparison.OrdinalIgnoreCase) &&
+                        aliases.Any(a => MatchText(l.Text, a)));
+
+                    if (label != null)
+                    {
+                        score += 100;
+                        strategies.Add($"Label[for='{id}'] ('{label.Text.Trim()}')");
+                    }
+                }
+
+                // 2. Enclosing container proximity (label + select in same row/form-group) (+85)
+                var stateLabel = allLabels.FirstOrDefault(l => aliases.Any(a => MatchText(l.Text, a)));
+                if (stateLabel != null)
+                {
+                    try
+                    {
+                        var isRelated = Convert.ToBoolean(_js.ExecuteScript(@"
+                            let l = arguments[0];
+                            let s = arguments[1];
+                            let c = l.closest('.form-group, .row, .field, div');
+                            return c ? c.contains(s) : false;
+                        ", stateLabel, select));
+
+                        if (isRelated)
+                        {
+                            score += 85;
+                            strategies.Add($"ContainerProximity ('{stateLabel.Text.Trim()}')");
+                        }
+                    }
+                    catch { }
+                }
+
+                // 3. Direct attributes (+50)
+                if (aliases.Any(a => MatchText(ariaLabel, a)))
+                {
+                    score += 50;
+                    strategies.Add($"aria-label='{ariaLabel}'");
+                }
+
+                if (aliases.Any(a => MatchText(name, a)))
+                {
+                    score += 45;
+                    strategies.Add($"name='{name}'");
+                }
+
+                if (aliases.Any(a => MatchText(id, a)))
+                {
+                    score += 40;
+                    strategies.Add($"id='{id}'");
+                }
+
+                if (score > 0)
+                {
+                    candidates.Add(new CandidateMatch<IWebElement>
+                    {
+                        Element = select,
+                        Score = score,
+                        StrategyUsed = string.Join(" + ", strategies),
+                        ElementDetails = $"<select id='{id}' name='{name}'>"
+                    });
+                }
+            }
+
+            sw.Stop();
+
+            if (!candidates.Any())
+            {
+                // If only 1 select exists in this form, select it as a safe single fallback
+                if (selects.Count == 1)
+                {
+                    LogDiagnostic($"[FindDropdown: '{semanticLabel}'] Selected single available dropdown in context. Time: {sw.ElapsedMilliseconds}ms");
+                    return selects[0];
+                }
+
+                LogDiagnostic($"[FindDropdown: '{semanticLabel}'] No candidate matched dropdown criteria. Time: {sw.ElapsedMilliseconds}ms");
+                return null;
+            }
+
+            var best = candidates.OrderByDescending(c => c.Score).First();
+            LogDiagnostic($"[FindDropdown: '{semanticLabel}'] Selected dropdown with score {best.Score} via {best.StrategyUsed}. Time: {sw.ElapsedMilliseconds}ms");
+            return best.Element;
+        }
+
+        #endregion
+
+        #region Other Form Elements (Checkboxes, WYSIWYG, Submit, Root Form Discovery)
+
+        public IWebElement? FindCheckbox(ISearchContext context, string checkboxLabel)
+        {
+            var checkboxes = context.FindElements(By.CssSelector("input[type='checkbox']")).Where(c => c.Displayed).ToList();
+            if (!checkboxes.Any()) return null;
+
+            foreach (var cb in checkboxes)
+            {
+                var val = cb.GetAttribute("value") ?? "";
+                var id = cb.GetAttribute("id") ?? "";
+                var name = cb.GetAttribute("name") ?? "";
+
+                if (MatchText(val, checkboxLabel) || MatchText(id, checkboxLabel) || MatchText(name, checkboxLabel))
+                    return cb;
+
+                try
+                {
+                    var text = _js.ExecuteScript(@"
+                        let c = arguments[0];
+                        return ((c.nextSibling ? c.nextSibling.textContent : '') + ' ' +
+                                (c.nextElementSibling ? c.nextElementSibling.innerText : '') + ' ' +
+                                (c.parentElement ? c.parentElement.innerText : '')).trim();
+                    ", cb)?.ToString() ?? "";
+
+                    if (MatchText(text, checkboxLabel)) return cb;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        public bool FillRichTextEditor(ISearchContext context, string semanticLabel, string content)
+        {
+            try
+            {
+                var editables = context.FindElements(By.CssSelector("div.note-editable, div[contenteditable='true'], .wysiwyg-editor")).Where(e => e.Displayed).ToList();
+                if (editables.Any())
+                {
+                    var editable = editables.First();
+                    _js.ExecuteScript(@"
+                        arguments[0].innerHTML = '<p>' + arguments[1] + '</p>';
+                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                    ", editable, content);
+                    return true;
+                }
+
+                var textarea = FindTextBox(context, semanticLabel);
+                if (textarea != null)
+                {
+                    textarea.Clear();
+                    textarea.SendKeys(content);
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public IWebElement? FindSubmitButton(ISearchContext context)
+        {
+            var buttons = context.FindElements(By.CssSelector("button, input[type='submit'], input[type='button'], a.btn")).Where(b => b.Displayed && b.Enabled).ToList();
+            var keywords = new[] { "submit", "save", "send", "register", "done" };
+
+            var match = buttons.FirstOrDefault(b =>
+            {
+                var text = (b.Text ?? "").Trim();
+                var val = (b.GetAttribute("value") ?? "").Trim();
+                var aria = (b.GetAttribute("aria-label") ?? "").Trim();
+                return keywords.Any(k => MatchText(text, k) || MatchText(val, k) || MatchText(aria, k));
+            });
+
+            return match ?? buttons.FirstOrDefault();
+        }
 
         public IWebElement? DiscoverMainRootForm(IWebDriver driver)
         {
-            try
+            var forms = driver.FindElements(By.TagName("form")).Where(f => f.Displayed).ToList();
+            if (!forms.Any()) return driver.FindElements(By.TagName("body")).FirstOrDefault();
+
+            var primaryForm = forms.OrderByDescending(f =>
             {
-                const string script = @"
-                    const forms = Array.from(document.querySelectorAll('form'));
-                    if (forms.length === 0) return document.body;
-                    let best = forms[0];
-                    let maxControls = 0;
-                    for (const f of forms) {
-                        const count = f.querySelectorAll('input, select, textarea').length;
-                        if (count > maxControls) {
-                            maxControls = count;
-                            best = f;
-                        }
-                    }
-                    return best;
-                ";
-                return _js.ExecuteScript(script) as IWebElement ?? driver.FindElements(By.TagName("body")).FirstOrDefault();
-            }
-            catch
-            {
-                return driver.FindElements(By.TagName("body")).FirstOrDefault();
-            }
+                try { return f.FindElements(By.CssSelector("input, select, textarea")).Count; }
+                catch { return 0; }
+            }).FirstOrDefault();
+
+            return primaryForm ?? forms.First();
         }
 
-        public IReadOnlyList<IWebElement> DiscoverForms(ISearchContext context)
-        {
-            try
-            {
-                var forms = context.FindElements(By.TagName("form")).ToList();
-                if (forms.Count > 0) return forms;
+        #endregion
 
-                var body = context.FindElements(By.TagName("body")).FirstOrDefault();
-                if (body != null) return new List<IWebElement> { body };
-            }
-            catch { }
-
-            return Array.Empty<IWebElement>();
-        }
+        #region Shadow DOM & iFrame Discovery (Isolated Support)
 
         public IReadOnlyList<IWebElement> DiscoverAllShadowFormHosts()
         {
@@ -117,7 +600,7 @@ namespace CloudQA.ResilientAutomation.Core
             try
             {
                 var result = _js.ExecuteScript(script);
-                if (result is ReadOnlyCollection<IWebElement> webElements)
+                if (result is System.Collections.ObjectModel.ReadOnlyCollection<IWebElement> webElements)
                 {
                     return webElements;
                 }
@@ -148,7 +631,7 @@ namespace CloudQA.ResilientAutomation.Core
             try
             {
                 var result = _js.ExecuteScript(script);
-                if (result is ReadOnlyCollection<IWebElement> webElements)
+                if (result is System.Collections.ObjectModel.ReadOnlyCollection<IWebElement> webElements)
                 {
                     return webElements;
                 }
@@ -159,398 +642,72 @@ namespace CloudQA.ResilientAutomation.Core
 
         #endregion
 
-        #region Ultra-Fast Single-Roundtrip Resilient Finders
-
-        /// <summary>
-        /// Locates a text box in a single browser-side roundtrip using JavaScript.
-        /// Safely handles both IWebElement contexts and IWebDriver contexts without illegal argument types.
-        /// </summary>
-        public IWebElement? FindTextBox(ISearchContext context, string semanticLabel)
-        {
-            try
-            {
-                var aliases = GetFieldAliases(semanticLabel).Select(a => a.ToLowerInvariant()).ToArray();
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const aliases = arguments[1];
-                    const inputs = Array.from(root.querySelectorAll(""input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea""));
-                    if (inputs.length === 0) return null;
-
-                    // 1. Direct attribute match
-                    for (const el of inputs) {
-                        const id = (el.id || '').toLowerCase();
-                        const name = (el.name || '').toLowerCase();
-                        const ph = (el.placeholder || '').toLowerCase();
-                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                        for (const a of aliases) {
-                            if (id.includes(a) || name.includes(a) || ph.includes(a) || aria.includes(a)) {
-                                return el;
-                            }
-                        }
-                    }
-
-                    // 2. Correlate with <label>
-                    const labels = root.querySelectorAll('label');
-                    for (const l of labels) {
-                        const text = (l.textContent || '').toLowerCase();
-                        for (const a of aliases) {
-                            if (text.includes(a)) {
-                                if (l.htmlFor) {
-                                    try {
-                                        const target = root.querySelector('#' + CSS.escape(l.htmlFor));
-                                        if (target) return target;
-                                    } catch(e) {}
-                                }
-                                const nested = l.querySelector('input, textarea');
-                                if (nested) return nested;
-                                let next = l.nextElementSibling;
-                                while (next) {
-                                    if (next.matches('input, textarea')) return next;
-                                    const inner = next.querySelector('input, textarea');
-                                    if (inner) return inner;
-                                    next = next.nextElementSibling;
-                                }
-                                if (l.parentElement) {
-                                    const pInput = l.parentElement.querySelector('input, textarea');
-                                    if (pInput) return pInput;
-                                }
-                            }
-                        }
-                    }
-
-                    return inputs.length === 1 ? inputs[0] : null;
-                ";
-
-                return _js.ExecuteScript(script, (object?)rootElement, aliases) as IWebElement;
-            }
-            catch (StaleElementReferenceException)
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Locates a radio button in a single browser-side roundtrip.
-        /// </summary>
-        public IWebElement? FindRadioButton(ISearchContext context, string optionText, string? groupLabel = "Gender")
-        {
-            try
-            {
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const opt = (arguments[1] || '').trim().toLowerCase();
-                    const radios = Array.from(root.querySelectorAll(""input[type='radio']""));
-                    if (radios.length === 0) return null;
-
-                    // 1. Value or ID
-                    for (const r of radios) {
-                        const val = (r.value || '').trim().toLowerCase();
-                        const id = (r.id || '').trim().toLowerCase();
-                        if (val === opt || id === opt || id.includes(opt)) return r;
-                    }
-
-                    // 2. Sibling text & text nodes
-                    for (const r of radios) {
-                        const text = ((r.nextSibling ? r.nextSibling.textContent : '') + ' ' +
-                                      (r.nextElementSibling ? r.nextElementSibling.innerText : '') + ' ' +
-                                      (r.parentElement ? r.parentElement.innerText : '')).toLowerCase();
-                        if (text.includes(opt)) return r;
-                    }
-
-                    // 3. Label correlation
-                    const labels = root.querySelectorAll('label');
-                    for (const l of labels) {
-                        if ((l.textContent || '').toLowerCase().includes(opt)) {
-                            if (l.htmlFor) {
-                                try {
-                                    const target = root.querySelector('#' + CSS.escape(l.htmlFor));
-                                    if (target) return target;
-                                } catch(e) {}
-                            }
-                            const nested = l.querySelector(""input[type='radio']"");
-                            if (nested) return nested;
-                        }
-                    }
-
-                    return radios[0];
-                ";
-
-                return _js.ExecuteScript(script, (object?)rootElement, optionText) as IWebElement;
-            }
-            catch (StaleElementReferenceException)
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Locates a dropdown in a single browser-side roundtrip.
-        /// </summary>
-        public IWebElement? FindDropdown(ISearchContext context, string semanticLabel)
-        {
-            try
-            {
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const labelText = (arguments[1] || '').toLowerCase();
-                    const selects = Array.from(root.querySelectorAll('select'));
-                    if (selects.length === 0) return null;
-
-                    const aliases = [labelText, 'state', 'region', 'province'];
-
-                    // 1. Direct attributes
-                    for (const s of selects) {
-                        const id = (s.id || '').toLowerCase();
-                        const name = (s.name || '').toLowerCase();
-                        const aria = (s.getAttribute('aria-label') || '').toLowerCase();
-                        for (const a of aliases) {
-                            if (id.includes(a) || name.includes(a) || aria.includes(a)) return s;
-                        }
-                    }
-
-                    // 2. Label correlation
-                    const labels = root.querySelectorAll('label');
-                    for (const l of labels) {
-                        const text = (l.textContent || '').toLowerCase();
-                        for (const a of aliases) {
-                            if (text.includes(a)) {
-                                if (l.htmlFor) {
-                                    try {
-                                        const target = root.querySelector('#' + CSS.escape(l.htmlFor));
-                                        if (target) return target;
-                                    } catch(e) {}
-                                }
-                                const nested = l.querySelector('select');
-                                if (nested) return nested;
-                                let next = l.nextElementSibling;
-                                while (next) {
-                                    if (next.matches('select')) return next;
-                                    const inner = next.querySelector('select');
-                                    if (inner) return inner;
-                                    next = next.nextElementSibling;
-                                }
-                            }
-                        }
-                    }
-
-                    return selects[0];
-                ";
-
-                return _js.ExecuteScript(script, (object?)rootElement, semanticLabel) as IWebElement;
-            }
-            catch (StaleElementReferenceException)
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Locates a checkbox in a single browser-side roundtrip.
-        /// </summary>
-        public IWebElement? FindCheckbox(ISearchContext context, string checkboxLabel)
-        {
-            try
-            {
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const labelText = (arguments[1] || '').trim().toLowerCase();
-                    const boxes = Array.from(root.querySelectorAll(""input[type='checkbox']""));
-                    if (boxes.length === 0) return null;
-
-                    // 1. Direct attributes
-                    for (const b of boxes) {
-                        const id = (b.id || '').toLowerCase();
-                        const val = (b.value || '').toLowerCase();
-                        const name = (b.name || '').toLowerCase();
-                        if (id.includes(labelText) || val.includes(labelText) || name.includes(labelText)) return b;
-                    }
-
-                    // 2. Sibling text
-                    for (const b of boxes) {
-                        const text = ((b.nextSibling ? b.nextSibling.textContent : '') + ' ' +
-                                      (b.nextElementSibling ? b.nextElementSibling.innerText : '') + ' ' +
-                                      (b.parentElement ? b.parentElement.innerText : '')).toLowerCase();
-                        if (text.includes(labelText)) return b;
-                    }
-
-                    // 3. Label correlation
-                    const labels = root.querySelectorAll('label');
-                    for (const l of labels) {
-                        if ((l.textContent || '').toLowerCase().includes(labelText)) {
-                            if (l.htmlFor) {
-                                try {
-                                    const target = root.querySelector('#' + CSS.escape(l.htmlFor));
-                                    if (target) return target;
-                                } catch(e) {}
-                            }
-                            const nested = l.querySelector(""input[type='checkbox']"");
-                            if (nested) return nested;
-                        }
-                    }
-
-                    return null;
-                ";
-
-                return _js.ExecuteScript(script, (object?)rootElement, checkboxLabel) as IWebElement;
-            }
-            catch (StaleElementReferenceException)
-            {
-                return null;
-            }
-        }
-
-        public bool FillRichTextEditor(ISearchContext context, string semanticLabel, string content)
-        {
-            try
-            {
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const content = arguments[1];
-                    const editable = root.querySelector(""div.note-editable, div[contenteditable='true'], .wysiwyg-editor"");
-                    if (editable) {
-                        editable.innerHTML = '<p>' + content + '</p>';
-                        editable.dispatchEvent(new Event('input', { bubbles: true }));
-                        editable.dispatchEvent(new Event('change', { bubbles: true }));
-                        return true;
-                    }
-                    return false;
-                ";
-
-                bool filled = Convert.ToBoolean(_js.ExecuteScript(script, (object?)rootElement, content));
-                if (filled) return true;
-
-                var textarea = FindTextBox(context, semanticLabel);
-                if (textarea != null)
-                {
-                    textarea.Clear();
-                    textarea.SendKeys(content);
-                    return true;
-                }
-            }
-            catch { }
-
-            return false;
-        }
-
-        public IWebElement? FindSubmitButton(ISearchContext context)
-        {
-            try
-            {
-                var rootElement = context as IWebElement;
-
-                const string script = @"
-                    const root = arguments[0] || document;
-                    const btns = Array.from(root.querySelectorAll(""button, input[type='submit'], input[type='button'], a.btn""));
-                    const keywords = ['submit', 'save', 'send', 'register', 'done'];
-                    for (const b of btns) {
-                        const text = (b.innerText || b.value || b.getAttribute('aria-label') || '').toLowerCase();
-                        for (const k of keywords) {
-                            if (text.includes(k)) return b;
-                        }
-                    }
-                    return btns[0] || null;
-                ";
-
-                return _js.ExecuteScript(script, (object?)rootElement) as IWebElement;
-            }
-            catch (StaleElementReferenceException)
-            {
-                return null;
-            }
-        }
-
-        #endregion
-
-        #region Field Verification Helpers
-
-        public bool VerifyInputText(IWebElement input, string expected)
-        {
-            try
-            {
-                var actual = input.GetAttribute("value") ?? "";
-                return string.Equals(actual.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase);
-            }
-            catch { return false; }
-        }
-
-        public bool VerifyRadioSelected(IWebElement radio)
-        {
-            try
-            {
-                if (radio.Selected) return true;
-                var ariaChecked = radio.GetAttribute("aria-checked");
-                return string.Equals(ariaChecked, "true", StringComparison.OrdinalIgnoreCase);
-            }
-            catch { return false; }
-        }
-
-        public bool VerifyDropdownSelected(IWebElement selectElement, string expected)
-        {
-            try
-            {
-                var select = new SelectElement(selectElement);
-                var selectedText = select.SelectedOption?.Text?.Trim() ?? "";
-                var selectedValue = select.SelectedOption?.GetAttribute("value")?.Trim() ?? "";
-
-                return ContainsIgnoreCase(selectedText, expected) || ContainsIgnoreCase(selectedValue, expected);
-            }
-            catch { return false; }
-        }
-
-        #endregion
-
-        #region Private Helpers
+        #region Normalization & Matching Helpers
 
         private static string[] GetFieldAliases(string semanticLabel)
         {
-            if (semanticLabel.Equals("First Name", StringComparison.OrdinalIgnoreCase))
-                return new[] { "First Name", "firstname", "fname", "first_name", "first-name", "given-name", "name" };
-            if (semanticLabel.Equals("Last Name", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Last Name", "lastname", "lname", "last_name", "last-name", "surname", "family-name" };
-            if (semanticLabel.Equals("Date of Birth", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Date of Birth", "dob", "birthdate", "birthday", "yyyy-mm-dd" };
-            if (semanticLabel.Equals("Mobile Number", StringComparison.OrdinalIgnoreCase) || 
-                semanticLabel.Equals("Mobile #", StringComparison.OrdinalIgnoreCase) ||
-                semanticLabel.Equals("Mobile", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Mobile #", "Mobile Number", "mobile", "phone", "contact", "cell" };
-            if (semanticLabel.Equals("Email", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Email", "email", "e-mail" };
-            if (semanticLabel.Equals("Country", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Country", "nation" };
-            if (semanticLabel.Equals("About Yourself", StringComparison.OrdinalIgnoreCase))
-                return new[] { "About Yourself", "about", "bio" };
-            if (semanticLabel.Equals("Description", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Description", "desc", "details" };
-            if (semanticLabel.Equals("Username", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Username", "user", "user_name" };
-            if (semanticLabel.Equals("Password", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Password", "pwd", "pass" };
-            if (semanticLabel.Equals("Confirm Password", StringComparison.OrdinalIgnoreCase))
-                return new[] { "Confirm Password", "confirmpassword", "confirm_password" };
+            var clean = Normalize(semanticLabel);
+            if (clean == "first name")
+                return new[] { "first name", "firstname", "first_name", "first-name", "given name", "given-name", "fname" };
+            if (clean == "last name")
+                return new[] { "last name", "lastname", "last_name", "last-name", "family name", "family-name", "surname", "lname" };
+            if (clean == "date of birth")
+                return new[] { "date of birth", "dob", "birthdate", "birthday", "yyyy-mm-dd" };
+            if (clean == "mobile number" || clean == "mobile #" || clean == "mobile")
+                return new[] { "mobile #", "mobile number", "mobile", "phone", "cell", "contact" };
+            if (clean == "email")
+                return new[] { "email", "e-mail" };
+            if (clean == "country")
+                return new[] { "country", "nation" };
+            if (clean == "state")
+                return new[] { "state", "province", "region" };
+            if (clean == "about yourself")
+                return new[] { "about yourself", "about", "bio" };
+            if (clean == "description")
+                return new[] { "description", "desc" };
+            if (clean == "username")
+                return new[] { "username", "user", "user_name" };
+            if (clean == "password")
+                return new[] { "password", "pwd" };
+            if (clean == "confirm password")
+                return new[] { "confirm password", "confirmpassword" };
 
-            return new[] { semanticLabel };
+            return new[] { clean };
         }
 
-        private static bool ContainsIgnoreCase(string? source, string target)
+        public static string Normalize(string? input)
         {
-            if (string.IsNullOrWhiteSpace(source)) return false;
-            return source.IndexOf(target, StringComparison.OrdinalIgnoreCase) >= 0;
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+            // Trim, lowercase, replace underscores and dashes with spaces, collapse multiple whitespaces
+            var replaced = input.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' ');
+            return Regex.Replace(replaced, @"\s+", " ");
         }
 
-        private static bool EqualsIgnoreCase(string? source, string target)
+        private static bool MatchText(string? source, string target)
         {
-            if (string.IsNullOrWhiteSpace(source)) return false;
-            return string.Equals(source.Trim(), target.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(target)) return false;
+            return Normalize(source).Contains(Normalize(target));
+        }
+
+        private static bool MatchOptionText(string? source, string option)
+        {
+            if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(option)) return false;
+            var normSource = Normalize(source);
+            var normOption = Normalize(option);
+            // Word boundary match or exact match to prevent 'Male' falsely matching 'Female'
+            return Regex.IsMatch(normSource, $@"\b{Regex.Escape(normOption)}\b");
+        }
+
+        private static void LogDiagnostic(string message)
+        {
+            try
+            {
+                TestContext.Out.WriteLine(message);
+            }
+            catch
+            {
+                Console.WriteLine(message);
+            }
         }
 
         #endregion

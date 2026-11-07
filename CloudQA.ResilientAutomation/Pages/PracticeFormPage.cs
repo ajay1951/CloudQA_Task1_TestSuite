@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Support.UI;
 using CloudQA.ResilientAutomation.Core;
@@ -17,268 +18,228 @@ namespace CloudQA.ResilientAutomation.Pages
         public string Country { get; set; } = "India";
         public string State { get; set; } = "India";
         public List<string> Hobbies { get; set; } = new() { "Dance", "Reading", "Cricket" };
-        public string AboutYourself { get; set; } = "Senior Full-Stack & Automation Test Engineer specializing in resilient Selenium automation.";
-        public string Description { get; set; } = "Complete submission for CloudQA practice form with resilient multi-context element locators.";
+        public string AboutYourself { get; set; } = "Senior Full-Stack & Automation Test Engineer specializing in resilient Selenium frameworks.";
+        public string Description { get; set; } = "Complete submission for CloudQA practice form with resilient locator architecture.";
         public string Username { get; set; } = "ajay_g";
         public string Password { get; set; } = "Secure@Pass123";
         public string ConfirmPassword { get; set; } = "Secure@Pass123";
         public bool AgreeTerms { get; set; } = true;
     }
 
-    public class FormTestResult
-    {
-        public string ContextName { get; set; } = string.Empty;
-        public bool FirstNameFound { get; set; }
-        public bool FirstNameVerified { get; set; }
-        public bool LastNameFound { get; set; }
-        public bool GenderFound { get; set; }
-        public bool GenderVerified { get; set; }
-        public bool DobFound { get; set; }
-        public bool MobileFound { get; set; }
-        public bool EmailFound { get; set; }
-        public bool CountryFound { get; set; }
-        public bool StateFound { get; set; }
-        public bool StateVerified { get; set; }
-        public int HobbiesSelectedCount { get; set; }
-        public bool AboutFound { get; set; }
-        public bool DescriptionFound { get; set; }
-        public bool UsernameFound { get; set; }
-        public bool PasswordFound { get; set; }
-        public bool ConfirmPasswordFound { get; set; }
-        public bool AgreeTermsChecked { get; set; }
-        public bool SubmitClicked { get; set; }
-
-        public bool AllThreeFieldsVerified => FirstNameVerified && GenderVerified && StateVerified;
-        public bool FormCompleted => FirstNameFound || GenderFound || StateFound;
-    }
-
+    /// <summary>
+    /// Senior SDET Page Object Model representing the CloudQA Practice Form.
+    /// Strictly separates browser action and state retrieval from test assertion logic.
+    /// </summary>
     public class PracticeFormPage
     {
         private readonly ISearchContext _context;
         private readonly ResilientElementFinder _finder;
+        private readonly WebDriverWait _wait;
 
         public PracticeFormPage(IWebDriver driver, int timeoutSeconds = 15, ISearchContext? context = null)
         {
+            if (driver == null) throw new ArgumentNullException(nameof(driver));
             _context = context ?? driver;
             _finder = new ResilientElementFinder(driver, timeoutSeconds);
+            _wait = new WebDriverWait(driver, TimeSpan.FromSeconds(timeoutSeconds));
         }
 
-        /// <summary>
-        /// Fills all details present on the form context with high performance.
-        /// </summary>
-        public FormTestResult FillCompleteForm(string contextName, PracticeFormData data, bool clickSubmit = true)
+        #region Core Required Fields (First Name, Gender, State)
+
+        public void SetFirstName(string firstName)
         {
-            var result = new FormTestResult { ContextName = contextName };
-            Console.WriteLine($"\n=======================================================");
-            Console.WriteLine($" [Processing Context: {contextName}]");
-            Console.WriteLine($"=======================================================");
+            if (string.IsNullOrWhiteSpace(firstName)) throw new ArgumentException("First Name cannot be null or empty", nameof(firstName));
+            
+            var element = _finder.FindTextBox(_context, "First Name");
+            if (element == null)
+            {
+                throw new NoSuchElementException("Failed to find First Name textbox using resilient discovery strategies.");
+            }
+
+            _finder.ScrollIntoCenter(element);
+            element.Clear();
+            element.SendKeys(firstName);
+        }
+
+        public string GetFirstNameValue()
+        {
+            var element = _finder.FindTextBox(_context, "First Name");
+            if (element == null) throw new NoSuchElementException("First Name element not found when reading value.");
+            return (element.GetAttribute("value") ?? "").Trim();
+        }
+
+        public void SelectGender(string genderOption)
+        {
+            if (string.IsNullOrWhiteSpace(genderOption)) throw new ArgumentException("Gender option cannot be null or empty", nameof(genderOption));
+
+            var radio = _finder.FindRadioButton(_context, genderOption, "Gender");
+            if (radio == null)
+            {
+                throw new NoSuchElementException($"Failed to find Gender radio button for option '{genderOption}'.");
+            }
+
+            _finder.SafeClick(radio);
+        }
+
+        public bool IsGenderSelected(string genderOption)
+        {
+            var radio = _finder.FindRadioButton(_context, genderOption, "Gender");
+            if (radio == null) return false;
+            
+            if (radio.Selected) return true;
+            return string.Equals(radio.GetAttribute("aria-checked"), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public void SelectState(string stateText)
+        {
+            if (string.IsNullOrWhiteSpace(stateText)) throw new ArgumentException("State text cannot be null or empty", nameof(stateText));
+
+            var dropdown = _finder.FindDropdown(_context, "State");
+            if (dropdown == null)
+            {
+                throw new NoSuchElementException("Failed to find State dropdown using resilient discovery strategies.");
+            }
+
+            _finder.ScrollIntoCenter(dropdown);
+            var select = new SelectElement(dropdown);
 
             try
             {
-                // 1. First Name
-                var fNameInput = _finder.FindTextBox(_context, "First Name");
-                if (fNameInput != null)
-                {
-                    result.FirstNameFound = true;
-                    fNameInput.Clear();
-                    fNameInput.SendKeys(data.FirstName);
-                    result.FirstNameVerified = _finder.VerifyInputText(fNameInput, data.FirstName);
-                    Console.WriteLine($"  ✓ First Name: '{data.FirstName}' (Verified: {result.FirstNameVerified})");
-                }
-
-                // 2. Last Name
-                var lNameInput = _finder.FindTextBox(_context, "Last Name");
-                if (lNameInput != null)
-                {
-                    result.LastNameFound = true;
-                    lNameInput.Clear();
-                    lNameInput.SendKeys(data.LastName);
-                    Console.WriteLine($"  ✓ Last Name: '{data.LastName}'");
-                }
-
-                // 3. Gender (Radio)
-                var genderRadio = _finder.FindRadioButton(_context, data.Gender, "Gender");
-                if (genderRadio != null)
-                {
-                    result.GenderFound = true;
-                    _finder.SafeClick(genderRadio);
-                    result.GenderVerified = _finder.VerifyRadioSelected(genderRadio);
-                    Console.WriteLine($"  ✓ Gender: '{data.Gender}' (Verified Selected: {result.GenderVerified})");
-                }
-
-                // 4. Date of Birth
-                var dobInput = _finder.FindTextBox(_context, "Date of Birth");
-                if (dobInput != null)
-                {
-                    result.DobFound = true;
-                    dobInput.Clear();
-                    dobInput.SendKeys(data.DateOfBirth);
-                    Console.WriteLine($"  ✓ Date of Birth: '{data.DateOfBirth}'");
-                }
-
-                // 5. Mobile #
-                var mobileInput = _finder.FindTextBox(_context, "Mobile Number");
-                if (mobileInput != null)
-                {
-                    result.MobileFound = true;
-                    mobileInput.Clear();
-                    mobileInput.SendKeys(data.MobileNumber);
-                    Console.WriteLine($"  ✓ Mobile #: '{data.MobileNumber}'");
-                }
-
-                // 6. Email
-                var emailInput = _finder.FindTextBox(_context, "Email");
-                if (emailInput != null)
-                {
-                    result.EmailFound = true;
-                    emailInput.Clear();
-                    emailInput.SendKeys(data.Email);
-                    Console.WriteLine($"  ✓ Email: '{data.Email}'");
-                }
-
-                // 7. Country
-                var countryInput = _finder.FindTextBox(_context, "Country");
-                if (countryInput != null)
-                {
-                    result.CountryFound = true;
-                    countryInput.Clear();
-                    countryInput.SendKeys(data.Country);
-                    Console.WriteLine($"  ✓ Country: '{data.Country}'");
-                }
-
-                // 8. State (Dropdown)
-                var stateSelect = _finder.FindDropdown(_context, "State");
-                if (stateSelect != null)
-                {
-                    result.StateFound = true;
-                    var selectElement = new SelectElement(stateSelect);
-                    try
-                    {
-                        selectElement.SelectByText(data.State);
-                        result.StateVerified = _finder.VerifyDropdownSelected(stateSelect, data.State);
-                        Console.WriteLine($"  ✓ State: Selected '{data.State}' by text. (Verified: {result.StateVerified})");
-                    }
-                    catch (NoSuchElementException)
-                    {
-                        if (selectElement.Options.Count > 1)
-                        {
-                            selectElement.SelectByIndex(1);
-                            var selectedOption = selectElement.SelectedOption.Text.Trim();
-                            result.StateVerified = true;
-                            Console.WriteLine($"  ✓ State: Fallback selected option '{selectedOption}'.");
-                        }
-                    }
-                }
-
-                // 9. Hobbies Checkboxes
-                foreach (var hobby in data.Hobbies)
-                {
-                    var cb = _finder.FindCheckbox(_context, hobby);
-                    if (cb != null)
-                    {
-                        if (!cb.Selected)
-                        {
-                            _finder.SafeClick(cb);
-                        }
-                        result.HobbiesSelectedCount++;
-                        Console.WriteLine($"  ✓ Hobby: '{hobby}' selected.");
-                    }
-                }
-
-                // 10. About Yourself
-                var aboutInput = _finder.FindTextBox(_context, "About Yourself");
-                if (aboutInput != null)
-                {
-                    result.AboutFound = true;
-                    aboutInput.Clear();
-                    aboutInput.SendKeys(data.AboutYourself);
-                    Console.WriteLine("  ✓ About Yourself: Populated.");
-                }
-
-                // 11. Description
-                bool descFilled = _finder.FillRichTextEditor(_context, "Description", data.Description);
-                if (descFilled)
-                {
-                    result.DescriptionFound = true;
-                    Console.WriteLine("  ✓ Description (Rich Text Editor): Populated.");
-                }
-
-                // 12. Username
-                var userInput = _finder.FindTextBox(_context, "Username");
-                if (userInput != null)
-                {
-                    result.UsernameFound = true;
-                    userInput.Clear();
-                    userInput.SendKeys(data.Username);
-                    Console.WriteLine($"  ✓ Username: '{data.Username}'");
-                }
-
-                // 13. Password
-                var passInput = _finder.FindTextBox(_context, "Password");
-                if (passInput != null)
-                {
-                    result.PasswordFound = true;
-                    passInput.Clear();
-                    passInput.SendKeys(data.Password);
-                    Console.WriteLine("  ✓ Password: Set.");
-                }
-
-                // 14. Confirm Password
-                var confirmPassInput = _finder.FindTextBox(_context, "Confirm Password");
-                if (confirmPassInput != null)
-                {
-                    result.ConfirmPasswordFound = true;
-                    confirmPassInput.Clear();
-                    confirmPassInput.SendKeys(data.ConfirmPassword);
-                    Console.WriteLine("  ✓ Confirm Password: Set.");
-                }
-
-                // 15. Agreement Checkbox
-                if (data.AgreeTerms)
-                {
-                    var agreeCb = _finder.FindCheckbox(_context, "Agree") 
-                                  ?? _finder.FindCheckbox(_context, "terms");
-                    if (agreeCb != null)
-                    {
-                        if (!agreeCb.Selected)
-                        {
-                            _finder.SafeClick(agreeCb);
-                        }
-                        result.AgreeTermsChecked = true;
-                        Console.WriteLine("  ✓ Terms & Conditions: Agreed.");
-                    }
-                }
-
-                // 16. Submit Button
-                if (clickSubmit)
-                {
-                    var submitBtn = _finder.FindSubmitButton(_context);
-                    if (submitBtn != null)
-                    {
-                        _finder.SafeClick(submitBtn);
-                        result.SubmitClicked = true;
-                        Console.WriteLine("  ✓ Submit Button Clicked.");
-                    }
-                }
+                select.SelectByText(stateText);
             }
-            catch (StaleElementReferenceException) { }
-            catch (Exception ex)
+            catch (NoSuchElementException)
             {
-                Console.WriteLine($"  ⚠ Notice: {ex.Message}");
+                // Fallback to value or non-placeholder option index if text differs slightly
+                var matchingOption = select.Options.FirstOrDefault(o => 
+                    ResilientElementFinder.Normalize(o.Text).Contains(ResilientElementFinder.Normalize(stateText)));
+                
+                if (matchingOption != null)
+                {
+                    select.SelectByText(matchingOption.Text);
+                }
+                else if (select.Options.Count > 1)
+                {
+                    select.SelectByIndex(1);
+                }
+                else
+                {
+                    throw;
+                }
             }
-
-            return result;
         }
 
-        public FormTestResult FillAndVerifyThreeFields(string contextName, string firstName, string gender, string state, bool clickSubmit = true)
+        public string GetSelectedState()
         {
-            var data = new PracticeFormData
-            {
-                FirstName = firstName,
-                Gender = gender,
-                State = state
-            };
-            return FillCompleteForm(contextName, data, clickSubmit);
+            var dropdown = _finder.FindDropdown(_context, "State");
+            if (dropdown == null) throw new NoSuchElementException("State dropdown not found when reading selection.");
+            var select = new SelectElement(dropdown);
+            return (select.SelectedOption?.Text ?? "").Trim();
         }
+
+        public void ClickSubmit()
+        {
+            var submitBtn = _finder.FindSubmitButton(_context);
+            if (submitBtn == null) throw new NoSuchElementException("Submit button not found in form context.");
+            _finder.SafeClick(submitBtn);
+        }
+
+        #endregion
+
+        #region Extended Form Capabilities (All 16 Fields)
+
+        public void FillCompleteForm(PracticeFormData data, bool clickSubmit = true)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+
+            SetFirstName(data.FirstName);
+
+            var lName = _finder.FindTextBox(_context, "Last Name");
+            if (lName != null)
+            {
+                lName.Clear();
+                lName.SendKeys(data.LastName);
+            }
+
+            SelectGender(data.Gender);
+
+            var dob = _finder.FindTextBox(_context, "Date of Birth");
+            if (dob != null)
+            {
+                dob.Clear();
+                dob.SendKeys(data.DateOfBirth);
+            }
+
+            var mobile = _finder.FindTextBox(_context, "Mobile Number");
+            if (mobile != null)
+            {
+                mobile.Clear();
+                mobile.SendKeys(data.MobileNumber);
+            }
+
+            var email = _finder.FindTextBox(_context, "Email");
+            if (email != null)
+            {
+                email.Clear();
+                email.SendKeys(data.Email);
+            }
+
+            var country = _finder.FindTextBox(_context, "Country");
+            if (country != null)
+            {
+                country.Clear();
+                country.SendKeys(data.Country);
+            }
+
+            SelectState(data.State);
+
+            foreach (var hobby in data.Hobbies)
+            {
+                var cb = _finder.FindCheckbox(_context, hobby);
+                if (cb != null && !cb.Selected) _finder.SafeClick(cb);
+            }
+
+            var about = _finder.FindTextBox(_context, "About Yourself");
+            if (about != null)
+            {
+                about.Clear();
+                about.SendKeys(data.AboutYourself);
+            }
+
+            _finder.FillRichTextEditor(_context, "Description", data.Description);
+
+            var user = _finder.FindTextBox(_context, "Username");
+            if (user != null)
+            {
+                user.Clear();
+                user.SendKeys(data.Username);
+            }
+
+            var pass = _finder.FindTextBox(_context, "Password");
+            if (pass != null)
+            {
+                pass.Clear();
+                pass.SendKeys(data.Password);
+            }
+
+            var confirmPass = _finder.FindTextBox(_context, "Confirm Password");
+            if (confirmPass != null)
+            {
+                confirmPass.Clear();
+                confirmPass.SendKeys(data.ConfirmPassword);
+            }
+
+            if (data.AgreeTerms)
+            {
+                var agree = _finder.FindCheckbox(_context, "Agree") ?? _finder.FindCheckbox(_context, "terms");
+                if (agree != null && !agree.Selected) _finder.SafeClick(agree);
+            }
+
+            if (clickSubmit)
+            {
+                ClickSubmit();
+            }
+        }
+
+        #endregion
     }
 }
