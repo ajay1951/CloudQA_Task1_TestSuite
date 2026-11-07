@@ -16,6 +16,7 @@ namespace CloudQA.ResilientAutomation.Configuration
         public bool Headless { get; set; } = false;
         public string Browser { get; set; } = "Chrome";
         public string FirstName { get; set; } = "Ajay";
+        public string LastName { get; set; } = "Gollapudi";
         public string Gender { get; set; } = "Male";
         public string State { get; set; } = "India";
 
@@ -52,6 +53,9 @@ namespace CloudQA.ResilientAutomation.Configuration
             if (!string.IsNullOrWhiteSpace(section["FirstName"]))
                 settings.FirstName = section["FirstName"]!.Trim();
 
+            if (!string.IsNullOrWhiteSpace(section["LastName"]))
+                settings.LastName = section["LastName"]!.Trim();
+
             if (!string.IsNullOrWhiteSpace(section["Gender"]))
                 settings.Gender = section["Gender"]!.Trim();
 
@@ -82,6 +86,11 @@ namespace CloudQA.ResilientAutomation.Configuration
                                ?? Environment.GetEnvironmentVariable("FirstName");
             if (!string.IsNullOrWhiteSpace(envFirstName))
                 settings.FirstName = envFirstName.Trim();
+
+            var envLastName = Environment.GetEnvironmentVariable("LAST_NAME")
+                              ?? Environment.GetEnvironmentVariable("LastName");
+            if (!string.IsNullOrWhiteSpace(envLastName))
+                settings.LastName = envLastName.Trim();
 
             var envGender = Environment.GetEnvironmentVariable("GENDER");
             if (!string.IsNullOrWhiteSpace(envGender))
@@ -119,6 +128,11 @@ namespace CloudQA.ResilientAutomation.Configuration
                                      ?? TestContext.Parameters.Get("firstName");
                 if (!string.IsNullOrWhiteSpace(nunitFirstName))
                     settings.FirstName = nunitFirstName.Trim();
+
+                var nunitLastName = TestContext.Parameters.Get("LastName")
+                                    ?? TestContext.Parameters.Get("lastName");
+                if (!string.IsNullOrWhiteSpace(nunitLastName))
+                    settings.LastName = nunitLastName.Trim();
 
                 var nunitGender = TestContext.Parameters.Get("Gender")
                                   ?? TestContext.Parameters.Get("gender");

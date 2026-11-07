@@ -98,6 +98,7 @@ namespace CloudQA.ResilientAutomation.Tests
             var totalSw = Stopwatch.StartNew();
 
             _page.SetFirstName(_settings.FirstName);
+            _page.SetLastName(_settings.LastName);
             _page.SelectGender(_settings.Gender);
             _page.SelectState(_settings.State);
 
@@ -129,6 +130,7 @@ namespace CloudQA.ResilientAutomation.Tests
             var data = new PracticeFormData
             {
                 FirstName = _settings.FirstName,
+                LastName = _settings.LastName,
                 Gender = _settings.Gender,
                 State = _settings.State
             };

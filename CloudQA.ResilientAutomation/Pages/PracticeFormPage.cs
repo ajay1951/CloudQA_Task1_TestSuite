@@ -68,6 +68,25 @@ namespace CloudQA.ResilientAutomation.Pages
             return (element.GetAttribute("value") ?? "").Trim();
         }
 
+        public void SetLastName(string lastName)
+        {
+            if (string.IsNullOrWhiteSpace(lastName)) return;
+
+            var element = _finder.FindTextBox(_context, "Last Name");
+            if (element != null)
+            {
+                _finder.ScrollIntoCenter(element);
+                element.Clear();
+                element.SendKeys(lastName);
+            }
+        }
+
+        public string GetLastNameValue()
+        {
+            var element = _finder.FindTextBox(_context, "Last Name");
+            return element != null ? (element.GetAttribute("value") ?? "").Trim() : string.Empty;
+        }
+
         public void SelectGender(string genderOption)
         {
             if (string.IsNullOrWhiteSpace(genderOption)) throw new ArgumentException("Gender option cannot be null or empty", nameof(genderOption));
