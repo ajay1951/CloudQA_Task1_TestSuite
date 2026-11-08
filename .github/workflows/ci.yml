@@ -7,6 +7,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  HEADLESS: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
 jobs:
   build:
     name: Build & Compile (.NET 10)
@@ -56,6 +60,8 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Execute Controlled Tests Suite (34 Tests)
+        env:
+          HEADLESS: "true"
         run: >
           dotnet test --no-build -c Release 
           --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" 
@@ -92,6 +98,8 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Execute Browser Verification Tests
+        env:
+          HEADLESS: "true"
         run: >
           dotnet test --no-build -c Release 
           --filter "Category=BrowserVerification" 
@@ -126,6 +134,9 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Execute Live Practice Form E2E Tests
+        env:
+          HEADLESS: "true"
+          TARGET_URL: "https://app.cloudqa.io/home/AutomationPracticeForm"
         run: >
           dotnet test --no-build -c Release 
           --filter "Category=E2E" 

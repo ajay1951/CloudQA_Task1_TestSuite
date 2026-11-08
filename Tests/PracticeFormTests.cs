@@ -114,6 +114,13 @@ namespace CloudQA.ResilientAutomation.Tests
             });
 
             _page.ClickSubmit();
+            try
+            {
+                var alert = _driver.SwitchTo().Alert();
+                alert.Accept();
+            }
+            catch (NoAlertPresentException) { }
+
             totalSw.Stop();
             TestContext.Out.WriteLine($"[Test 04] Complete 3-field automation + submission completed in {totalSw.ElapsedMilliseconds}ms.");
         }
@@ -136,6 +143,13 @@ namespace CloudQA.ResilientAutomation.Tests
             };
 
             _page.FillCompleteForm(data, clickSubmit: true);
+            try
+            {
+                var alert = _driver.SwitchTo().Alert();
+                alert.Accept();
+            }
+            catch (NoAlertPresentException) { }
+
             totalSw.Stop();
             TestContext.Out.WriteLine($"[Test 05] Full 16-field form automated and submitted in {totalSw.ElapsedMilliseconds}ms.");
 

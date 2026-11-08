@@ -52,7 +52,12 @@ namespace CloudQA.ResilientAutomation.Core
         {
             var options = new ChromeOptions();
 
-            if (settings.Headless)
+            bool runHeadless = settings.Headless ||
+                               (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")) &&
+                                !OperatingSystem.IsWindows() &&
+                                !OperatingSystem.IsMacOS());
+
+            if (runHeadless)
             {
                 options.AddArgument("--headless=new");
             }
@@ -89,7 +94,12 @@ namespace CloudQA.ResilientAutomation.Core
         private static IWebDriver CreateFirefoxDriver(TestSettings settings)
         {
             var options = new FirefoxOptions();
-            if (settings.Headless)
+            bool runHeadless = settings.Headless ||
+                               (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")) &&
+                                !OperatingSystem.IsWindows() &&
+                                !OperatingSystem.IsMacOS());
+
+            if (runHeadless)
             {
                 options.AddArgument("-headless");
             }
@@ -115,7 +125,12 @@ namespace CloudQA.ResilientAutomation.Core
         private static IWebDriver CreateEdgeDriver(TestSettings settings)
         {
             var options = new EdgeOptions();
-            if (settings.Headless)
+            bool runHeadless = settings.Headless ||
+                               (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")) &&
+                                !OperatingSystem.IsWindows() &&
+                                !OperatingSystem.IsMacOS());
+
+            if (runHeadless)
             {
                 options.AddArgument("--headless=new");
             }

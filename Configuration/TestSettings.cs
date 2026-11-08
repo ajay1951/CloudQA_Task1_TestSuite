@@ -105,22 +105,28 @@ namespace CloudQA.ResilientAutomation.Configuration
             {
                 var nunitUrl = TestContext.Parameters.Get("TargetUrl") 
                                ?? TestContext.Parameters.Get("targetUrl")
-                               ?? TestContext.Parameters.Get("url");
+                               ?? TestContext.Parameters.Get("url")
+                               ?? TestContext.Parameters.Get("NUnit.TargetUrl")
+                               ?? TestContext.Parameters.Get("NUnit.targetUrl");
                 if (!string.IsNullOrWhiteSpace(nunitUrl))
                     settings.TargetUrl = nunitUrl.Trim();
 
                 var nunitHeadless = TestContext.Parameters.Get("Headless")
-                                    ?? TestContext.Parameters.Get("headless");
+                                    ?? TestContext.Parameters.Get("headless")
+                                    ?? TestContext.Parameters.Get("NUnit.Headless")
+                                    ?? TestContext.Parameters.Get("NUnit.headless");
                 if (bool.TryParse(nunitHeadless, out bool nH))
                     settings.Headless = nH;
 
                 var nunitTimeout = TestContext.Parameters.Get("TimeoutSeconds")
-                                   ?? TestContext.Parameters.Get("timeout");
+                                   ?? TestContext.Parameters.Get("timeout")
+                                   ?? TestContext.Parameters.Get("NUnit.TimeoutSeconds");
                 if (int.TryParse(nunitTimeout, out int nT))
                     settings.TimeoutSeconds = nT;
 
                 var nunitBrowser = TestContext.Parameters.Get("Browser")
-                                   ?? TestContext.Parameters.Get("browser");
+                                   ?? TestContext.Parameters.Get("browser")
+                                   ?? TestContext.Parameters.Get("NUnit.Browser");
                 if (!string.IsNullOrWhiteSpace(nunitBrowser))
                     settings.Browser = nunitBrowser.Trim();
 
