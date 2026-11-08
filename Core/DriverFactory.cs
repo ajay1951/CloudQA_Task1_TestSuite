@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Edge;
@@ -9,7 +10,8 @@ namespace CloudQA.ResilientAutomation.Core
 {
     /// <summary>
     /// Factory for configuring and instantiating WebDriver instances.
-    /// Supports Chrome, Firefox, and Edge with configurable timeouts and headless execution.
+    /// Supports Chrome, Firefox, and Edge with configurable timeouts and modern headless execution.
+    /// Employs Selenium Manager for automated, platform-compatible driver management.
     /// </summary>
     public static class DriverFactory
     {
@@ -33,14 +35,33 @@ namespace CloudQA.ResilientAutomation.Core
             return driver;
         }
 
+        public static string GetBrowserDiagnostics(IWebDriver driver)
+        {
+            if (driver is IHasCapabilities hasCaps)
+            {
+                var caps = hasCaps.Capabilities;
+                var bName = caps.GetCapability("browserName") ?? "Unknown";
+                var bVersion = caps.GetCapability("browserVersion") ?? "Unknown";
+                var platform = caps.GetCapability("platformName") ?? "Unknown";
+                return $"[BrowserDiagnostics] Browser: {bName} | Version: {bVersion} | Platform: {platform}";
+            }
+            return "[BrowserDiagnostics] Capabilities unavailable.";
+        }
+
         private static IWebDriver CreateChromeDriver(TestSettings settings)
         {
             var options = new ChromeOptions();
+
             if (settings.Headless)
             {
                 options.AddArgument("--headless=new");
             }
 
+            // Essential flags for Linux / Docker / GitHub Actions runners
+            options.AddArgument("--no-sandbox");
+            options.AddArgument("--disable-dev-shm-usage");
+            options.AddArgument("--disable-gpu");
+            options.AddArgument("--window-size=1920,1080");
             options.AddArgument("--start-maximized");
             options.AddArgument("--disable-notifications");
             options.AddArgument("--disable-blink-features=AutomationControlled");
@@ -56,7 +77,12 @@ namespace CloudQA.ResilientAutomation.Core
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Failed to initialize ChromeDriver: {ex.Message}", ex);
+                string diagnosticInfo = $"Failed to initialize ChromeDriver [Headless={settings.Headless}]: {ex.Message}";
+                if (ex.InnerException != null)
+                {
+                    diagnosticInfo += $" (Inner: {ex.InnerException.Message})";
+                }
+                throw new InvalidOperationException(diagnosticInfo, ex);
             }
         }
 
@@ -68,6 +94,8 @@ namespace CloudQA.ResilientAutomation.Core
                 options.AddArgument("-headless");
             }
 
+            options.AddArgument("--width=1920");
+            options.AddArgument("--height=1080");
             options.PageLoadStrategy = PageLoadStrategy.Normal;
 
             var service = FirefoxDriverService.CreateDefaultService();
@@ -80,7 +108,7 @@ namespace CloudQA.ResilientAutomation.Core
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Failed to initialize FirefoxDriver: {ex.Message}", ex);
+                throw new InvalidOperationException($"Failed to initialize FirefoxDriver [Headless={settings.Headless}]: {ex.Message}", ex);
             }
         }
 
@@ -92,6 +120,10 @@ namespace CloudQA.ResilientAutomation.Core
                 options.AddArgument("--headless=new");
             }
 
+            options.AddArgument("--no-sandbox");
+            options.AddArgument("--disable-dev-shm-usage");
+            options.AddArgument("--disable-gpu");
+            options.AddArgument("--window-size=1920,1080");
             options.AddArgument("--start-maximized");
             options.AddArgument("--disable-notifications");
             options.PageLoadStrategy = PageLoadStrategy.Normal;
@@ -106,7 +138,7 @@ namespace CloudQA.ResilientAutomation.Core
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Failed to initialize EdgeDriver: {ex.Message}", ex);
+                throw new InvalidOperationException($"Failed to initialize EdgeDriver [Headless={settings.Headless}]: {ex.Message}", ex);
             }
         }
     }

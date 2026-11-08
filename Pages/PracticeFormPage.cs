@@ -29,8 +29,8 @@ namespace CloudQA.ResilientAutomation.Pages
 
     /// <summary>
     /// Senior SDET Page object representing the CloudQA Practice Form.
-    /// Provides action and verification methods for form fields with dynamic ARIA combobox
-    /// support, stale element reference recovery, and zero silent fallbacks.
+    /// Provides action and verification methods for form fields with strict custom ARIA combobox
+    /// support, post-selection state verification, stale element reference recovery, and zero silent fallbacks.
     /// </summary>
     public class PracticeFormPage
     {
@@ -51,29 +51,12 @@ namespace CloudQA.ResilientAutomation.Pages
 
         #region Stale Element Reference Recovery Helper
 
-        private void ExecuteWithStaleRecovery(string actionName, Action action, int maxRetries = 3)
-        {
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
-            {
-                try
-                {
-                    action();
-                    return;
-                }
-                catch (AmbiguousMatchException)
-                {
-                    // Ambiguity must never be retried or suppressed
-                    throw;
-                }
-                catch (StaleElementReferenceException ex) when (attempt < maxRetries)
-                {
-                    LogDiagnostic($"[Recovery] StaleElementReferenceException in '{actionName}' (Attempt {attempt}/{maxRetries}): {ex.Message}. Re-discovering fresh element...");
-                    Thread.Sleep(150);
-                }
-            }
-        }
-
-        private T ExecuteWithStaleRecovery<T>(string actionName, Func<T> func, int maxRetries = 3)
+        /// <summary>
+        /// Executes an action with a strict 3-attempt retry policy upon StaleElementReferenceException.
+        /// Immediately propagates AmbiguousMatchException and NoSuchElementException.
+        /// Preserves the original StaleElementReferenceException when all attempts are exhausted.
+        /// </summary>
+        public static T ExecuteWithStaleRecovery<T>(string actionName, Func<T> func, int maxRetries = 3, Action<string>? logger = null)
         {
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
@@ -83,15 +66,36 @@ namespace CloudQA.ResilientAutomation.Pages
                 }
                 catch (AmbiguousMatchException)
                 {
-                    throw;
+                    throw; // Ambiguity must never be retried or suppressed
                 }
-                catch (StaleElementReferenceException ex) when (attempt < maxRetries)
+                catch (NoSuchElementException)
                 {
-                    LogDiagnostic($"[Recovery] StaleElementReferenceException in '{actionName}' (Attempt {attempt}/{maxRetries}): {ex.Message}. Re-discovering fresh element...");
+                    throw; // Missing element must never be retried as a stale reference
+                }
+                catch (StaleElementReferenceException ex)
+                {
+                    logger?.Invoke($"[Recovery] StaleElementReferenceException in '{actionName}' (Attempt {attempt}/{maxRetries}): {ex.Message}");
+                    if (attempt >= maxRetries)
+                    {
+                        throw; // Preserve original StaleElementReferenceException on final failure
+                    }
                     Thread.Sleep(150);
                 }
             }
-            return func();
+
+            throw new InvalidOperationException($"Exhausted {maxRetries} retry attempts in '{actionName}'.");
+        }
+
+        /// <summary>
+        /// Action overload delegating directly to the Func{T} implementation to guarantee identical semantics.
+        /// </summary>
+        public static void ExecuteWithStaleRecovery(string actionName, Action action, int maxRetries = 3, Action<string>? logger = null)
+        {
+            ExecuteWithStaleRecovery<object?>(actionName, () =>
+            {
+                action();
+                return null;
+            }, maxRetries, logger);
         }
 
         private static void LogDiagnostic(string message)
@@ -119,7 +123,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 _finder.ScrollIntoCenter(element);
                 element.Clear();
                 element.SendKeys(firstName);
-            });
+            }, logger: LogDiagnostic);
         }
 
         public string GetFirstNameValue()
@@ -129,7 +133,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 var element = _finder.FindTextBox(_context, "First Name");
                 if (element == null) throw new NoSuchElementException("First Name element not found when reading value.");
                 return (element.GetAttribute("value") ?? "").Trim();
-            });
+            }, logger: LogDiagnostic);
         }
 
         public void SetLastName(string lastName)
@@ -145,7 +149,7 @@ namespace CloudQA.ResilientAutomation.Pages
                     element.Clear();
                     element.SendKeys(lastName);
                 }
-            });
+            }, logger: LogDiagnostic);
         }
 
         public string GetLastNameValue()
@@ -154,7 +158,7 @@ namespace CloudQA.ResilientAutomation.Pages
             {
                 var element = _finder.FindTextBox(_context, "Last Name");
                 return element != null ? (element.GetAttribute("value") ?? "").Trim() : string.Empty;
-            });
+            }, logger: LogDiagnostic);
         }
 
         public void SelectGender(string genderOption)
@@ -170,7 +174,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 }
 
                 _finder.SafeClick(radio);
-            });
+            }, logger: LogDiagnostic);
         }
 
         public bool IsGenderSelected(string genderOption)
@@ -182,7 +186,7 @@ namespace CloudQA.ResilientAutomation.Pages
 
                 if (radio.Selected) return true;
                 return string.Equals(radio.GetAttribute("aria-checked"), "true", StringComparison.OrdinalIgnoreCase);
-            });
+            }, logger: LogDiagnostic);
         }
 
         public void SelectState(string stateText)
@@ -207,7 +211,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 {
                     SelectAriaComboboxOption(dropdown, stateText);
                 }
-            });
+            }, logger: LogDiagnostic);
         }
 
         private void SelectNativeDropdownOption(IWebElement dropdown, string stateText)
@@ -242,7 +246,6 @@ namespace CloudQA.ResilientAutomation.Pages
             if (!string.Equals(expanded, "true", StringComparison.OrdinalIgnoreCase))
             {
                 _finder.SafeClick(combobox);
-                Thread.Sleep(100);
             }
 
             // 2. Discover associated listbox via aria-controls / aria-owns or active DOM query
@@ -259,32 +262,117 @@ namespace CloudQA.ResilientAutomation.Pages
                 catch { }
             }
 
-            // 3. Collect option elements
-            var optionElements = optionRoot.FindElements(By.CssSelector("[role='option'], li, .dropdown-item, .combobox-option, option"))
-                                           .Where(o => o.Displayed).ToList();
-
-            // If empty, search direct parent / sibling popup
-            if (optionElements.Count == 0)
+            // 3. Wait explicitly for options to become visible (replaces fixed Thread.Sleep)
+            var optionElements = new List<IWebElement>();
+            try
             {
-                optionElements = _driver.FindElements(By.CssSelector("[role='listbox'] [role='option'], .dropdown-menu .dropdown-item, ul[role='listbox'] li"))
-                                        .Where(o => o.Displayed).ToList();
+                _wait.Until(_ =>
+                {
+                    var list = optionRoot.FindElements(By.CssSelector("[role='option'], li, .dropdown-item, .combobox-option, option"))
+                                         .Where(o => o.Displayed).ToList();
+                    if (list.Count == 0)
+                    {
+                        list = _driver.FindElements(By.CssSelector("[role='listbox'] [role='option'], .dropdown-menu .dropdown-item, ul[role='listbox'] li"))
+                                      .Where(o => o.Displayed).ToList();
+                    }
+                    if (list.Count > 0)
+                    {
+                        optionElements = list;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            catch (WebDriverTimeoutException)
+            {
+                throw new NoSuchElementException($"Timed out waiting for options to render in custom ARIA combobox for target '{stateText}'.");
             }
 
-            var matching = optionElements.FirstOrDefault(o =>
+            // 4. Filter enabled options (reject disabled and aria-disabled='true')
+            var enabledOptions = optionElements.Where(o =>
+            {
+                if (!o.Enabled) return false;
+                if (string.Equals(o.GetAttribute("disabled"), "true", StringComparison.OrdinalIgnoreCase)) return false;
+                if (string.Equals(o.GetAttribute("aria-disabled"), "true", StringComparison.OrdinalIgnoreCase)) return false;
+                return true;
+            }).ToList();
+
+            string targetNorm = ResilientElementFinder.Normalize(stateText);
+
+            // 5. Strict matching: Normalized exact match first
+            var exactMatches = enabledOptions.Where(o =>
             {
                 var text = (o.Text ?? o.GetAttribute("innerText") ?? o.GetAttribute("textContent") ?? "").Trim();
-                return ResilientElementFinder.Normalize(text) == ResilientElementFinder.Normalize(stateText) ||
-                       ResilientElementFinder.MatchText(text, stateText);
-            });
+                return ResilientElementFinder.Normalize(text) == targetNorm;
+            }).ToList();
 
-            if (matching != null)
+            if (exactMatches.Count > 1)
             {
-                _finder.SafeClick(matching);
+                throw new AmbiguousMatchException($"Ambiguous option match in custom ARIA combobox: multiple options matched target '{stateText}'.");
             }
-            else
+
+            IWebElement? selectedOption = exactMatches.FirstOrDefault();
+
+            // Fallback to strict whole-token match only if no exact match
+            if (selectedOption == null)
+            {
+                var tokenMatches = enabledOptions.Where(o =>
+                {
+                    var text = (o.Text ?? o.GetAttribute("innerText") ?? o.GetAttribute("textContent") ?? "").Trim();
+                    return ResilientElementFinder.MatchText(text, stateText);
+                }).ToList();
+
+                if (tokenMatches.Count > 1)
+                {
+                    throw new AmbiguousMatchException($"Ambiguous option match in custom ARIA combobox: multiple options partially matched target '{stateText}'.");
+                }
+
+                selectedOption = tokenMatches.FirstOrDefault();
+            }
+
+            if (selectedOption == null)
             {
                 var available = string.Join(", ", optionElements.Select(o => $"'{o.Text?.Trim()}'"));
                 throw new NoSuchElementException($"Option '{stateText}' was not found in the custom ARIA combobox. Available options: [{available}]");
+            }
+
+            // 6. Select the option
+            _finder.SafeClick(selectedOption);
+
+            // 7. Post-Selection Verification (Requirement 4)
+            bool isVerified = false;
+            try
+            {
+                isVerified = _wait.Until(_ =>
+                {
+                    // Check aria-selected on option
+                    if (string.Equals(selectedOption.GetAttribute("aria-selected"), "true", StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    // Check combobox text
+                    string comboText = ResilientElementFinder.Normalize(combobox.Text ?? combobox.GetAttribute("innerText") ?? "");
+                    if (comboText.Contains(targetNorm, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    // Check combobox value attribute
+                    string comboVal = ResilientElementFinder.Normalize(combobox.GetAttribute("value") ?? "");
+                    if (comboVal.Contains(targetNorm, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    // Check aria-activedescendant
+                    string activeDescendant = (combobox.GetAttribute("aria-activedescendant") ?? "").Trim();
+                    string optionId = (selectedOption.GetAttribute("id") ?? "").Trim();
+                    if (!string.IsNullOrEmpty(activeDescendant) && string.Equals(activeDescendant, optionId, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    return false;
+                });
+            }
+            catch (WebDriverTimeoutException) { }
+
+            if (!isVerified)
+            {
+                throw new InvalidOperationException($"Post-selection verification failed: custom ARIA combobox did not reflect selected option '{stateText}'.");
             }
         }
 
@@ -320,7 +408,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 if (activeOpt != null) return (activeOpt.Text ?? "").Trim();
 
                 return (dropdown.GetAttribute("value") ?? dropdown.Text ?? "").Trim();
-            });
+            }, logger: LogDiagnostic);
         }
 
         public void ClickSubmit()
@@ -330,7 +418,7 @@ namespace CloudQA.ResilientAutomation.Pages
                 var submitBtn = _finder.FindSubmitButton(_context);
                 if (submitBtn == null) throw new NoSuchElementException("Submit button not found in form context.");
                 _finder.SafeClick(submitBtn);
-            });
+            }, logger: LogDiagnostic);
         }
 
         #endregion

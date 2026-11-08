@@ -36,7 +36,7 @@ jobs:
         run: dotnet build --no-restore -c Release
 
   controlled-resilience-tests:
-    name: Controlled Mutation Resilience Suite (TC01-TC20)
+    name: Controlled Suites (Resilience, Stale Recovery, SafeClick, Combobox)
     needs: build
     runs-on: ubuntu-latest
 
@@ -55,18 +55,18 @@ jobs:
       - name: Build Solution
         run: dotnet build --no-restore -c Release
 
-      - name: Execute 20 Controlled Mutation Tests
+      - name: Execute Controlled Tests Suite (34 Tests)
         run: >
           dotnet test --no-build -c Release 
-          --filter "Category=Resilience" 
-          --logger "trx;LogFileName=resilience_results.trx" 
+          --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" 
+          --logger "trx;LogFileName=controlled_results.trx" 
           -- NUnit.Headless="true"
 
       - name: Upload Controlled Test Results & Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: resilience-test-results
+          name: controlled-test-results
           path: |
             **/TestResults/*.trx
             Screenshots/*.png

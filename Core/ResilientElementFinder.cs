@@ -36,16 +36,51 @@ namespace CloudQA.ResilientAutomation.Core
             catch { }
         }
 
-        public void SafeClick(IWebElement element)
+        public void SafeClick(IWebElement element, bool allowJsFallback = false)
         {
+            if (element == null) throw new ArgumentNullException(nameof(element));
+
+            // 1. Verify Enabled state (never click disabled elements)
+            if (!element.Enabled || string.Equals(element.GetAttribute("disabled"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidElementStateException($"Cannot click element <{element.TagName}>: element is disabled.");
+            }
+
+            // 2. Scroll into view and verify Displayed state
             ScrollIntoCenter(element);
+            if (!element.Displayed)
+            {
+                throw new ElementNotInteractableException($"Cannot click element <{element.TagName}>: element is not displayed/visible.");
+            }
+
             try
             {
                 element.Click();
             }
-            catch (WebDriverException)
+            catch (ElementClickInterceptedException ex)
             {
-                _js.ExecuteScript("arguments[0].click();", element);
+                LogDiagnostic($"[SafeClick] ElementClickInterceptedException on <{element.TagName}>: {ex.Message}");
+                if (allowJsFallback)
+                {
+                    LogDiagnostic($"[SafeClick] Applying explicitly controlled JavaScript click fallback on <{element.TagName}>.");
+                    _js.ExecuteScript("arguments[0].click();", element);
+                }
+                else
+                {
+                    throw new ElementClickInterceptedException($"Click on <{element.TagName}> was intercepted by another element. Disabling JS fallback prevents bypassing UI overlays.", ex);
+                }
+            }
+            catch (ElementNotInteractableException ex)
+            {
+                LogDiagnostic($"[SafeClick] ElementNotInteractableException on <{element.TagName}>: {ex.Message}");
+                if (allowJsFallback)
+                {
+                    _js.ExecuteScript("arguments[0].click();", element);
+                }
+                else
+                {
+                    throw;
+                }
             }
         }
 

@@ -31,7 +31,8 @@ This solution solves that fragility by implementing an **In-Browser Heuristic Sc
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Pages/PracticeFormPage                          │
-│        (Scoring Requests, ARIA Comboboxes & Stale Recovery)           │
+│     (Strict ARIA Comboboxes, Post-Selection Verification,             │
+│      and Deterministic 3-Attempt Stale Recovery)                      │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
@@ -48,19 +49,20 @@ This solution solves that fragility by implementing an **In-Browser Heuristic Sc
 │   • Hidden & Disabled Filtering (display:none, disabled=true)         │
 │   • Strict Ambiguity Rejection (Score Delta < 15 points)               │
 │   • Radio Group Scoping Priority & Fallback Rejection                 │
+│   • Hardened SafeClick (No silent JS bypass of disabled or overlays)   │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                         Core/DriverFactory                             │
-│     (Multi-Browser Lifecycle: Chrome, Firefox, Edge, Headless Mode)     │
+│     (Selenium Manager, Linux Container Flags, Multi-Browser Support)   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 The In-Browser Single-Pass Heuristic Engine
-Standard Selenium locator iterations result in dozens of synchronous JSON-wire/W3C round trips across localhost, causing high latency (~1000ms+ per field). 
+### 2.1 In-Browser Heuristic Evaluation
+Standard Selenium locator iterations often result in dozens of synchronous JSON-wire/W3C round trips across localhost, causing high latency. 
 
-To solve this, `ResilientElementFinder` executes a **single JavaScript evaluation directly inside the browser's JavaScript V8/SpiderMonkey engine**. In a single DOM traversal (<15ms), all interactive candidate elements are scored against semantic cues and ranked mathematically.
+To eliminate this overhead, `ResilientElementFinder` executes a **single-pass JavaScript evaluation directly inside the browser's JavaScript V8/SpiderMonkey engine**. All candidate interactive elements in the target scope are gathered, scored against semantic cues, and ranked in one pass before returning the best unique candidate to Selenium.
 
 ### 2.2 Confidence Scoring Rubric
 
@@ -91,16 +93,25 @@ Radio group discovery follows a strict 5-tier priority:
 ### 2.5 Word-Boundary Discrimination
 To prevent naive substring collisions (`"female".Contains("male") == true` or `"unmarried".Contains("married") == true`), our engine uses whole-token regex word boundaries `\bMale\b` and extracts direct text nodes, stripping child inputs.
 
-### 2.6 Custom ARIA Combobox Support
+### 2.6 Strict Custom ARIA Combobox Support & Post-Selection Verification
 Supports both native `<select>` and custom comboboxes:
 - `<div role="combobox">` and `<input role="combobox">`
 - `aria-controls` and `aria-owns` relationships
 - Dynamic `<ul role="listbox">` and `<li role="option">`
-- Post-selection state verification
-- Descriptive `NoSuchElementException` with available options if missing; **zero arbitrary fallbacks**.
+- Replaces fixed delays with explicit `WebDriverWait` for dynamic options
+- Normalized exact option matching (throws `AmbiguousMatchException` on duplicate matching options)
+- Respects `disabled` and `aria-disabled="true"`
+- **Post-Selection Verification**: Asserts that `aria-selected="true"`, combobox text, or input value matches the requested option. Throws `InvalidOperationException` if not verified; **zero arbitrary fallbacks**.
 
-### 2.7 Dynamic DOM & Stale Element Recovery
-Wraps page object actions in a bounded retry loop (up to 3 attempts) that intercepts `StaleElementReferenceException`, logs the event, and re-executes semantic discovery from scratch without reusing stale element references.
+### 2.7 Deterministic Stale Element Reference Recovery
+Wraps page object actions in a bounded retry helper with a strict policy:
+- **Maximum total attempts**: Exactly 3 attempts.
+- **Retry condition**: Retries only `StaleElementReferenceException`.
+- **Immediate propagation**: Never retries `AmbiguousMatchException` or `NoSuchElementException`.
+- **Preserves original failure**: If attempt 3 fails, the original `StaleElementReferenceException` is preserved and thrown.
+
+### 2.8 Hardened SafeClick
+Rejects clicks on disabled elements (`InvalidElementStateException`) or invisible elements (`ElementNotInteractableException`). Does not blindly bypass `ElementClickInterceptedException` with JavaScript clicks, ensuring modals, sticky headers, and overlay issues are caught honestly.
 
 ---
 
@@ -111,19 +122,21 @@ Configuration follows a 3-tier hierarchy:
 2. **Environment Variables**: Overrides config file (e.g., `TARGET_URL`, `BROWSER`, `HEADLESS`)
 3. **`appsettings.json`**: Default project settings
 
-### Supported Browsers
+### Supported Browsers & Driver Management
 Configurable in `appsettings.json` or CLI via `Browser`:
-- **`Chrome`** (Google Chrome with W3C flags and headless support)
+- **`Chrome`** (Google Chrome with modern `--headless=new`, `--no-sandbox`, and `--disable-dev-shm-usage`)
 - **`Firefox`** (Mozilla Firefox via GeckoDriver with headless support)
 - **`Edge`** (Microsoft Edge Chromium with headless support)
+
+Driver binaries are managed automatically via **Selenium Manager** (built into Selenium 4.52), resolving exact platform-compatible drivers for local and CI environments without fixed conflicting NuGet driver packages.
 
 ---
 
 ## 4. Test Suite Coverage
 
-The test suite consists of **28 automated tests** across three categories:
+The test suite consists of **42 automated tests** across six categories:
 
-### 4.1 Controlled Mutation Fixtures Matrix (20 Fixtures, `Tests/ResilienceControlledTests.cs`)
+### 4.1 Controlled Mutation Fixtures Matrix (20 Tests, `Tests/ResilienceControlledTests.cs`)
 
 | Fixture ID | Test Description | Mutation Type | Expected Behavior |
 |:---:|---|---|:---:|
@@ -148,12 +161,32 @@ The test suite consists of **28 automated tests** across three categories:
 | **19** | `Fixture_19_Punctuation_Normalization` | Punctuation/hyphens & "Billing First Name" | Exact normalized winner selected |
 | **20** | `Fixture_20_Multiple_Forms_Scoping` | Shipping vs Billing forms | Scoped form fills; unscoped rejects |
 
-### 4.2 Browser Verification Suite (3 Tests, `Tests/BrowserVerificationTests.cs`)
-- `Chrome_HeadlessDriver_InitializesAndDisposesCleanly`: Chrome driver lifecycle.
+### 4.2 Stale Element Recovery Suite (5 Tests, `Tests/StaleElementRecoveryTests.cs`)
+- `Retry_StaleOnFirstAttempt_SucceedsOnSecond`: Verifies success on attempt 2 after stale.
+- `Retry_StaleOnFirstTwoAttempts_SucceedsOnThird`: Verifies success on attempt 3 after two stales.
+- `Retry_StaleOnAllThreeAttempts_PreservesOriginalException`: Verifies exactly 3 attempts and preservation of original exception.
+- `Retry_AmbiguousMatchException_ImmediatelyPropagatesWithoutRetry`: Verifies no retry loops on ambiguity.
+- `Retry_NoSuchElementException_ImmediatelyPropagatesWithoutRetry`: Verifies no retry loops on missing elements.
+
+### 4.3 SafeClick Reliability Suite (4 Tests, `Tests/SafeClickTests.cs`)
+- `SafeClick_NormalElement_ClickSucceeds`: Standard click interactability.
+- `SafeClick_HiddenElement_ThrowsElementNotInteractableException`: Rejects hidden elements.
+- `SafeClick_DisabledElement_ThrowsInvalidElementStateException`: Rejects disabled elements.
+- `SafeClick_InterceptedElement_ThrowsElementClickInterceptedException`: Asserts overlay interception cannot be silently bypassed without opt-in.
+
+### 4.4 Custom ARIA Combobox Suite (5 Tests, `Tests/CustomComboboxTests.cs`)
+- `CustomCombobox_ValidOption_SelectsAndVerifiesSuccessfully`: Option selection and state check.
+- `CustomCombobox_MissingOption_ThrowsNoSuchElementException`: Asserts available options listing.
+- `CustomCombobox_UnreflectedSelection_ThrowsInvalidOperationException`: Asserts post-selection verification failure.
+- `CustomCombobox_DisabledOption_IsIgnored`: Filters out `aria-disabled="true"`.
+- `CustomCombobox_DuplicateMatchingOptions_ThrowsAmbiguousMatchException`: Rejects duplicate option ambiguity.
+
+### 4.5 Browser Verification Suite (3 Tests, `Tests/BrowserVerificationTests.cs`)
+- `Chrome_HeadlessDriver_InitializesAndDisposesCleanly`: Chrome headless lifecycle and disposal.
 - `DriverFactory_UnsupportedBrowser_ThrowsDescriptiveInvalidOperationException`: Guards against unsupported browsers.
 - `TestSettings_InvalidTimeout_ThrowsInvalidOperationException`: Validates timeout bounds (1–300s).
 
-### 4.3 Live E2E Integration Suite (5 Tests, `Tests/PracticeFormTests.cs`)
+### 4.6 Live E2E Integration Suite (5 Tests, `Tests/PracticeFormTests.cs`)
 - `FullWorkflow_EndToEnd_AutomatesAndSubmitsPracticeForm`: Full live workflow execution.
 - `AutomateFirstName_InputsValueCorrectly`: Live input verification.
 - `SelectGender_SelectsCorrectRadioOption`: Live radio selection and attribute check.
@@ -185,10 +218,10 @@ dotnet run -- --headless true
 dotnet run -- "https://app.cloudqa.io/home/AutomationPracticeForm"
 ```
 
-### 5.3 Run Controlled Resilience Tests
+### 5.3 Run Controlled Suites
 ```powershell
-# Execute all 20 controlled mutation fixtures
-dotnet test --filter "Category=Resilience" -- NUnit.Headless="true"
+# Execute all controlled suites (Resilience, Stale Recovery, SafeClick, Combobox)
+dotnet test --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" -- NUnit.Headless="true"
 ```
 
 ### 5.4 Run Browser Verification Tests
@@ -196,32 +229,27 @@ dotnet test --filter "Category=Resilience" -- NUnit.Headless="true"
 dotnet test --filter "Category=BrowserVerification" -- NUnit.Headless="true"
 ```
 
-### 5.5 Run Live E2E Tests
+### 5.5 Run Live E2E Smoke Tests
 ```powershell
 dotnet test --filter "Category=E2E" -- NUnit.Headless="true"
 ```
 
-### 5.6 Run Complete Suite (28 Tests)
+### 5.6 Run Complete Test Suite (42 Tests)
 ```powershell
 dotnet test -c Release -- NUnit.Headless="true"
 ```
 
 ---
 
-## 6. Verified Test Results & Benchmark Metrics
+## 6. Continuous Integration (GitHub Actions)
 
-All tests and standalone runners have been executed and verified in the environment:
+The pipeline [`.github/workflows/ci.yml`](.github/workflows/ci.yml) executes four isolated, non-masking jobs:
+1. **`build`**: Compiles Release binary. Fails CI on compiler errors.
+2. **`controlled-resilience-tests`**: Executes all 34 controlled tests. Fails CI on any test failure.
+3. **`browser-verification-tests`**: Validates driver options, disposal, and configuration guards.
+4. **`live-e2e-smoke-tests`**: Runs smoke tests against the live practice form. Errors are reported honestly without `continue-on-error: true`.
 
-```
-Test Run Summary:
---------------------------------------------------------------------------------
-Controlled Mutation Tests : Passed: 20, Failed: 0, Skipped: 0 (Duration: ~37s)
-Live E2E Smoke Tests      : Passed:  5, Failed: 0, Skipped: 0 (Duration: ~6s)
-Browser Verification Tests: Passed:  3, Failed: 0, Skipped: 0 (Duration: ~2s)
-Total NUnit Tests         : Passed: 28, Failed: 0, Skipped: 0 (100% Pass Rate)
-Standalone Program.cs     : Full form automation, verification & submission PASS
---------------------------------------------------------------------------------
-```
+TRX test reports and failure screenshots are published as artifacts on every run (`if: always()`).
 
 ---
 
