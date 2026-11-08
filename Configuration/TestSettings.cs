@@ -6,8 +6,8 @@ using NUnit.Framework;
 namespace CloudQA.ResilientAutomation.Configuration
 {
     /// <summary>
-    /// Thread-safe and strongly-typed test configuration model.
-    /// Implements strict priority: CLI Test Parameters > Environment Variables > appsettings.json > Defaults.
+    /// Configuration model for test execution settings.
+    /// Supports CLI parameters, environment variables, and appsettings.json.
     /// </summary>
     public class TestSettings
     {

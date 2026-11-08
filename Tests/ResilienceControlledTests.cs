@@ -9,12 +9,8 @@ using CloudQA.ResilientAutomation.Pages;
 namespace CloudQA.ResilientAutomation.Tests
 {
     /// <summary>
-    /// Controlled test fixtures testing resilience against synthetic DOM mutations:
-    /// - Reordered field layout
-    /// - Renamed IDs, names, and CSS classes
-    /// - Ambiguous element matches
-    /// - Missing field detection
-    /// Proves resilience with reproducible, measurable assertions.
+    /// Tests verifying locator resilience against DOM mutations:
+    /// reordered fields, scrambled IDs/classes, and ambiguous elements.
     /// </summary>
     [TestFixture]
     [Category("Resilience")]

@@ -18,8 +18,8 @@ namespace CloudQA.ResilientAutomation.Pages
         public string Country { get; set; } = "India";
         public string State { get; set; } = "India";
         public List<string> Hobbies { get; set; } = new() { "Dance", "Reading", "Cricket" };
-        public string AboutYourself { get; set; } = "Senior Full-Stack & Automation Test Engineer specializing in resilient Selenium frameworks.";
-        public string Description { get; set; } = "Complete submission for CloudQA practice form with resilient locator architecture.";
+        public string AboutYourself { get; set; } = "Automation test engineer specializing in Selenium frameworks.";
+        public string Description { get; set; } = "Form submission test for CloudQA practice form.";
         public string Username { get; set; } = "ajay_g";
         public string Password { get; set; } = "Secure@Pass123";
         public string ConfirmPassword { get; set; } = "Secure@Pass123";
@@ -27,8 +27,8 @@ namespace CloudQA.ResilientAutomation.Pages
     }
 
     /// <summary>
-    /// Senior SDET Page Object Model representing the CloudQA Practice Form.
-    /// Strictly separates browser action and state retrieval from test assertion logic.
+    /// Page object representing the CloudQA Practice Form.
+    /// Provides action and verification methods for form fields.
     /// </summary>
     public class PracticeFormPage
     {
