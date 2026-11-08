@@ -114,10 +114,10 @@ dotnet build
 You can run the automation directly as a standalone program:
 ```powershell
 # Run against the default CloudQA practice form
-dotnet run --project CloudQA.ResilientAutomation
+dotnet run
 
 # Run against any modified version of the page (as required by Point 4)
-dotnet run --project CloudQA.ResilientAutomation -- "https://your-custom-test-url/practice-form"
+dotnet run -- "https://your-custom-test-url/practice-form"
 ```
 
 ### Step 3: Run Controlled Resilience Tests (Quick Unit Check ~11s)
@@ -173,21 +173,21 @@ Configuration values are resolved using strict 3-tier precedence:
 ```
 CloudQA_Task1_TestSuite/
 ├── CloudQA.sln
+├── CloudQA.ResilientAutomation.csproj
+├── Program.cs                     # Standalone CLI entry runner
+├── appsettings.json               # Default configuration
 ├── README.md
-└── CloudQA.ResilientAutomation/
-    ├── CloudQA.ResilientAutomation.csproj
-    ├── appsettings.json
-    ├── Configuration/
-    │   └── TestSettings.cs            # Precedence loader & validator
-    ├── Core/
-    │   ├── DriverFactory.cs           # Clean Chrome options & timeouts
-    │   └── ResilientElementFinder.cs  # Prioritized confidence locator engine
-    ├── Pages/
-    │   └── PracticeFormPage.cs        # Page Object: actions & state inspection
-    └── Tests/
-        ├── PracticeFormTests.cs       # Live E2E tests (5 test cases)
-        ├── ResilienceControlledTests.cs # Controlled mutation & scoring tests
-        └── AdvancedDomTests.cs        # Isolated Shadow DOM & iFrame tests
+├── Configuration/
+│   └── TestSettings.cs            # Precedence loader & validator
+├── Core/
+│   ├── DriverFactory.cs           # Clean Chrome options & timeouts
+│   └── ResilientElementFinder.cs  # Prioritized confidence locator engine
+├── Pages/
+│   └── PracticeFormPage.cs        # Page Object: actions & state inspection
+└── Tests/
+    ├── PracticeFormTests.cs       # Live E2E tests (5 test cases)
+    ├── ResilienceControlledTests.cs # Controlled mutation & scoring tests
+    └── AdvancedDomTests.cs        # Isolated Shadow DOM & iFrame tests
 ```
 
 ---
