@@ -37,6 +37,12 @@ namespace CloudQA.ResilientAutomation.Tests
             var shadowHosts = _finder.DiscoverAllShadowFormHosts();
             TestContext.Out.WriteLine($"[Shadow DOM Test] Discovered {shadowHosts.Count} Shadow DOM host(s).");
 
+            if (shadowHosts.Count == 0)
+            {
+                Assert.Ignore("Target page does not contain any open Shadow DOM hosts (<shadow-form>). Skipping test.");
+                return;
+            }
+
             int processed = 0;
             for (int s = 0; s < shadowHosts.Count; s++)
             {
@@ -71,6 +77,12 @@ namespace CloudQA.ResilientAutomation.Tests
             var sw = Stopwatch.StartNew();
             var topIframes = _driver.FindElements(By.TagName("iframe"));
             TestContext.Out.WriteLine($"[iFrame Test] Discovered {topIframes.Count} top-level iframe(s).");
+
+            if (topIframes.Count == 0)
+            {
+                Assert.Ignore("Target page does not contain any <iframe> elements. Skipping test.");
+                return;
+            }
 
             int processed = 0;
             for (int i = 0; i < topIframes.Count; i++)

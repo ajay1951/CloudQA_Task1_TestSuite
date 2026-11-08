@@ -120,30 +120,40 @@ namespace CloudQA.ResilientAutomation.Pages
             }
 
             _finder.ScrollIntoCenter(dropdown);
-            var select = new SelectElement(dropdown);
 
-            try
+            if (dropdown.TagName.Equals("select", StringComparison.OrdinalIgnoreCase))
             {
-                select.SelectByText(stateText);
+                var select = new SelectElement(dropdown);
+                try
+                {
+                    select.SelectByText(stateText);
+                }
+                catch (NoSuchElementException)
+                {
+                    var matchingOption = select.Options.FirstOrDefault(o => 
+                        ResilientElementFinder.Normalize(o.Text).Contains(ResilientElementFinder.Normalize(stateText)));
+                    
+                    if (matchingOption != null)
+                    {
+                        select.SelectByText(matchingOption.Text);
+                    }
+                    else if (select.Options.Count > 1)
+                    {
+                        select.SelectByIndex(1);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
             }
-            catch (NoSuchElementException)
+            else
             {
-                // Fallback to value or non-placeholder option index if text differs slightly
-                var matchingOption = select.Options.FirstOrDefault(o => 
-                    ResilientElementFinder.Normalize(o.Text).Contains(ResilientElementFinder.Normalize(stateText)));
-                
-                if (matchingOption != null)
-                {
-                    select.SelectByText(matchingOption.Text);
-                }
-                else if (select.Options.Count > 1)
-                {
-                    select.SelectByIndex(1);
-                }
-                else
-                {
-                    throw;
-                }
+                // Fallback for custom div/button-based dropdowns on modified pages
+                _finder.SafeClick(dropdown);
+                var option = _context.FindElements(By.XPath($".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{stateText.ToLower()}')]"))
+                                     .FirstOrDefault(o => o.Displayed);
+                if (option != null) _finder.SafeClick(option);
             }
         }
 
@@ -151,8 +161,14 @@ namespace CloudQA.ResilientAutomation.Pages
         {
             var dropdown = _finder.FindDropdown(_context, "State");
             if (dropdown == null) throw new NoSuchElementException("State dropdown not found when reading selection.");
-            var select = new SelectElement(dropdown);
-            return (select.SelectedOption?.Text ?? "").Trim();
+
+            if (dropdown.TagName.Equals("select", StringComparison.OrdinalIgnoreCase))
+            {
+                var select = new SelectElement(dropdown);
+                return (select.SelectedOption?.Text ?? "").Trim();
+            }
+
+            return (dropdown.GetAttribute("value") ?? dropdown.Text ?? "").Trim();
         }
 
         public void ClickSubmit()
