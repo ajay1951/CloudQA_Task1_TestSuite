@@ -110,30 +110,40 @@ dotnet restore
 dotnet build
 ```
 
-### Step 2: Run Controlled Resilience Tests (Recommended Quick Check ~15s)
-Runs unit-level resilience fixtures without external network dependencies:
+### Step 2: Run as a Standalone Program (Fastest & Simplest)
+You can run the automation directly as a standalone program:
+```powershell
+# Run against the default CloudQA practice form
+dotnet run --project CloudQA.ResilientAutomation
+
+# Run against any modified version of the page (as required by Point 4)
+dotnet run --project CloudQA.ResilientAutomation -- "https://your-custom-test-url/practice-form"
+```
+
+### Step 3: Run Controlled Resilience Tests (Quick Unit Check ~11s)
+Runs unit-level resilience fixtures verifying field reordering, scrambled IDs/classes, and ambiguous candidate rejection:
 ```powershell
 dotnet test --filter "Category=Resilience" -- NUnit.Headless="true"
 ```
 
-### Step 3: Run Core 3-Field Live Automation Test
+### Step 4: Run Core 3-Field Live Automation Test via NUnit
 Executes the specific Task 1 assignment requirement (First Name, Gender, State entry, verification, and submit):
 ```powershell
 dotnet test --filter "FullyQualifiedName~Test_04_All_Three_Required_Fields_EndToEnd_Automation" -- NUnit.TargetUrl="https://app.cloudqa.io/home/AutomationPracticeForm" -- NUnit.Headless="true"
 ```
 
-### Step 4: Run Complete E2E Suite (Headless)
+### Step 5: Run Complete E2E Suite (Headless)
 Runs all 5 live practice form tests:
 ```powershell
 dotnet test --filter "Category=E2E" -- NUnit.TargetUrl="https://app.cloudqa.io/home/AutomationPracticeForm" -- NUnit.Headless="true"
 ```
 
-### Step 5: Run with Visible Browser GUI (Headful)
+### Step 6: Run with Visible Browser GUI (Headful)
 ```powershell
 dotnet test --filter "FullyQualifiedName~Test_04_All_Three_Required_Fields_EndToEnd_Automation" -- NUnit.TargetUrl="https://app.cloudqa.io/home/AutomationPracticeForm" -- NUnit.Headless="false"
 ```
 
-### Step 6: Run Against a Modified Test URL
+### Step 7: Run Against a Modified Test URL via NUnit
 Provide a custom or modified URL via CLI parameter:
 ```powershell
 dotnet test -- NUnit.TargetUrl="https://your-custom-test-url/practice-form" -- NUnit.Headless="true"
