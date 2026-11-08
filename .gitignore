@@ -10,3 +10,7 @@
 .idea/
 *.log
 
+
+# Local Screenshots
+Screenshots/
+*.png

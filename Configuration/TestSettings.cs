@@ -166,6 +166,12 @@ namespace CloudQA.ResilientAutomation.Configuration
                 throw new InvalidOperationException($"Invalid configuration: TimeoutSeconds must be between 1 and 300 seconds. Found: {TimeoutSeconds}.");
             }
 
+            var validBrowsers = new[] { "chrome", "firefox", "edge" };
+            if (string.IsNullOrWhiteSpace(Browser) || !validBrowsers.Contains(Browser.Trim().ToLowerInvariant()))
+            {
+                throw new InvalidOperationException($"Invalid configuration: Unsupported browser '{Browser}'. Supported browsers are: Chrome, Firefox, Edge.");
+            }
+
             if (string.IsNullOrWhiteSpace(FirstName))
             {
                 throw new InvalidOperationException("Invalid configuration: FirstName cannot be null or empty.");

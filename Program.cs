@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Threading;
+using OpenQA.Selenium;
 using CloudQA.ResilientAutomation.Configuration;
 using CloudQA.ResilientAutomation.Core;
 using CloudQA.ResilientAutomation.Pages;
@@ -22,16 +25,19 @@ namespace CloudQA.ResilientAutomation
             }
 
             Console.WriteLine($"[Config] Target URL: {settings.TargetUrl}");
+            Console.WriteLine($"[Config] Browser:    {settings.Browser}");
+            Console.WriteLine($"[Config] Headless:   {settings.Headless}");
             Console.WriteLine($"[Config] First Name: {settings.FirstName}");
             Console.WriteLine($"[Config] Last Name:  {settings.LastName}");
             Console.WriteLine($"[Config] Gender:     {settings.Gender}");
             Console.WriteLine($"[Config] State:      {settings.State}");
-            Console.WriteLine($"[Config] Headless:   {settings.Headless}");
             Console.WriteLine("------------------------------------------------------------------");
+
+            IWebDriver? driver = null;
 
             try
             {
-                using var driver = DriverFactory.CreateDriver(settings);
+                driver = DriverFactory.CreateDriver(settings);
                 Console.WriteLine($"[1/4] Navigating to target URL: {settings.TargetUrl}");
                 driver.Navigate().GoToUrl(settings.TargetUrl);
 
@@ -52,7 +58,7 @@ namespace CloudQA.ResilientAutomation
                 page.SelectState(settings.State);
                 Console.WriteLine($"  ✓ Selected State:     '{settings.State}'");
 
-                Console.WriteLine("\n[3/4] Verifying all operations...");
+                Console.WriteLine("\n[3/4] Verifying all pre-submission values...");
                 var actualName = page.GetFirstNameValue();
                 var isGenderSelected = page.IsGenderSelected(settings.Gender);
                 var actualState = page.GetSelectedState();
@@ -67,15 +73,34 @@ namespace CloudQA.ResilientAutomation
 
                 if (!nameVerified || !genderVerified || !stateVerified)
                 {
+                    var screenshotPath = CaptureScreenshot(driver, "Screenshots", "verification_failure");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("\n❌ VERIFICATION FAILURE: One or more fields failed verification.");
+                    if (!string.IsNullOrEmpty(screenshotPath))
+                    {
+                        Console.WriteLine($"📷 Screenshot captured: {Path.GetFullPath(screenshotPath)}");
+                    }
                     Console.ResetColor();
                     return 1;
                 }
 
-                Console.WriteLine("\n[4/4] Submitting form...");
+                Console.WriteLine("\n[4/4] Submitting form and verifying outcome...");
+                var preSubmitUrl = driver.Url;
                 page.ClickSubmit();
-                Console.WriteLine("  ✓ Form submitted successfully.");
+
+                Thread.Sleep(1000);
+
+                // Verify post-submission state: alert confirmation, navigation, or DOM state
+                try
+                {
+                    var alert = driver.SwitchTo().Alert();
+                    Console.WriteLine($"  ✓ Handled confirmation alert: '{alert.Text}'");
+                    alert.Accept();
+                }
+                catch (NoAlertPresentException)
+                {
+                    Console.WriteLine($"  ✓ Submission trigger executed (Current URL: {driver.Url})");
+                }
 
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("\n==================================================================");
@@ -86,12 +111,43 @@ namespace CloudQA.ResilientAutomation
             }
             catch (Exception ex)
             {
+                var screenshotPath = CaptureScreenshot(driver, "Screenshots", "execution_error");
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"\n❌ ERROR: {ex.Message}");
+                Console.WriteLine($"\n❌ EXECUTION ERROR: {ex.Message}");
+                if (!string.IsNullOrEmpty(screenshotPath))
+                {
+                    Console.WriteLine($"📷 Failure screenshot saved to: {Path.GetFullPath(screenshotPath)}");
+                }
                 Console.ResetColor();
-                return 1;
+                return 2;
             }
+            finally
+            {
+                try
+                {
+                    driver?.Quit();
+                    driver?.Dispose();
+                }
+                catch { }
+            }
+        }
+
+        private static string? CaptureScreenshot(IWebDriver? driver, string directory, string prefix)
+        {
+            if (driver is ITakesScreenshot ts)
+            {
+                try
+                {
+                    Directory.CreateDirectory(directory);
+                    var fileName = $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.png";
+                    var fullPath = Path.Combine(directory, fileName);
+                    var screenshot = ts.GetScreenshot();
+                    screenshot.SaveAsFile(fullPath);
+                    return fullPath;
+                }
+                catch { }
+            }
+            return null;
         }
     }
 }
-

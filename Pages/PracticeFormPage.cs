@@ -137,13 +137,10 @@ namespace CloudQA.ResilientAutomation.Pages
                     {
                         select.SelectByText(matchingOption.Text);
                     }
-                    else if (select.Options.Count > 1)
-                    {
-                        select.SelectByIndex(1);
-                    }
                     else
                     {
-                        throw;
+                        var available = string.Join(", ", select.Options.Select(o => $"'{o.Text.Trim()}'"));
+                        throw new NoSuchElementException($"Option '{stateText}' was not found in the State dropdown. Available options: [{available}]");
                     }
                 }
             }
@@ -153,7 +150,11 @@ namespace CloudQA.ResilientAutomation.Pages
                 _finder.SafeClick(dropdown);
                 var option = _context.FindElements(By.XPath($".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{stateText.ToLower()}')]"))
                                      .FirstOrDefault(o => o.Displayed);
-                if (option != null) _finder.SafeClick(option);
+                if (option == null)
+                {
+                    throw new NoSuchElementException($"Option '{stateText}' was not found in the custom State dropdown.");
+                }
+                _finder.SafeClick(option);
             }
         }
 
