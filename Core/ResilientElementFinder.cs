@@ -49,6 +49,135 @@ namespace CloudQA.ResilientAutomation.Core
             }
         }
 
+        #region Common JavaScript Engine Core
+
+        private const string CommonJsFunctions = @"
+            function norm(s) {
+                if (!s) return '';
+                return s.toString().toLowerCase()
+                        .replace(/[^a-z0-9\s]/g, ' ')
+                        .replace(/\b(required|optional|mandatory|enter|please|select|choose)\b/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+            }
+
+            function matchText(actual, target) {
+                const nActual = norm(actual);
+                const nTarget = norm(target);
+                if (!nActual || !nTarget) return { match: false, score: 0, exact: false };
+                if (nActual === nTarget) return { match: true, score: 100, exact: true };
+
+                const actualTokens = nActual.split(/\s+/);
+                const targetTokens = nTarget.split(/\s+/);
+                const targetPhrase = targetTokens.join(' ');
+                const actualPhrase = actualTokens.join(' ');
+
+                if (actualPhrase === targetPhrase) {
+                    return { match: true, score: 100, exact: true };
+                }
+
+                // Whole-phrase boundary matching
+                const phraseRegex = new RegExp('(^|\\s)' + targetPhrase.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '(\\s|$)', 'i');
+                if (phraseRegex.test(actualPhrase)) {
+                    const extraTokens = actualTokens.length - targetTokens.length;
+                    const score = Math.max(30, 80 - (extraTokens * 30));
+                    return { match: true, score: score, exact: false };
+                }
+
+                // Token subset containment
+                const allContained = targetTokens.every(t => actualTokens.includes(t));
+                if (allContained) {
+                    const extraTokens = actualTokens.length - targetTokens.length;
+                    return { match: true, score: Math.max(25, 70 - (extraTokens * 25)), exact: false };
+                }
+
+                return { match: false, score: 0, exact: false };
+            }
+
+            function matchOption(text, target) {
+                const nText = norm(text);
+                const nTarget = norm(target);
+                if (!nText || !nTarget) return false;
+                if (nText === nTarget) return true;
+                const tokens = nText.split(/\s+/);
+                return tokens.includes(nTarget);
+            }
+
+            function isVisible(el) {
+                if (!el || el.disabled) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                const rects = el.getClientRects();
+                return (el.offsetWidth > 0 || el.offsetHeight > 0 || rects.length > 0);
+            }
+
+            function evaluateCandidates(candidates, minConfidence = 40) {
+                if (!candidates || candidates.length === 0) return null;
+                candidates.sort((a, b) => b.score - a.score);
+                const top = candidates[0];
+                if (top.score < minConfidence) return null;
+
+                if (candidates.length > 1) {
+                    const runnerUp = candidates[1];
+                    const delta = top.score - runnerUp.score;
+                    if (delta < 15) {
+                        return {
+                            ambiguous: true,
+                            topScore: top.score,
+                            runnerScore: runnerUp.score,
+                            margin: delta,
+                            topDetails: top.details,
+                            runnerDetails: runnerUp.details
+                        };
+                    }
+                }
+
+                return {
+                    element: top.element,
+                    score: top.score,
+                    strategy: top.strategy,
+                    details: top.details
+                };
+            }
+        ";
+
+        private IWebElement? ProcessCandidateResult(object? res, string controlType, string label, Stopwatch sw)
+        {
+            if (res is IDictionary<string, object> dict)
+            {
+                if (dict.ContainsKey("ambiguous") && Convert.ToBoolean(dict["ambiguous"]))
+                {
+                    int topScore = dict.ContainsKey("topScore") ? Convert.ToInt32(dict["topScore"]) : 0;
+                    int runnerScore = dict.ContainsKey("runnerScore") ? Convert.ToInt32(dict["runnerScore"]) : 0;
+                    int margin = dict.ContainsKey("margin") ? Convert.ToInt32(dict["margin"]) : 0;
+                    string td = dict.TryGetValue("topDetails", out var t) ? t?.ToString() ?? "" : "";
+                    string rd = dict.TryGetValue("runnerDetails", out var r) ? r?.ToString() ?? "" : "";
+
+                    string errorMsg = $"[Locator:{controlType}] Ambiguous candidate match for '{label}'. Top Score: {topScore}, Runner-up Score: {runnerScore} (Margin: {margin} < 15). Candidate 1: {td} vs Candidate 2: {rd}";
+                    LogDiagnostic(errorMsg);
+                    throw new AmbiguousMatchException(errorMsg, controlType, topScore, runnerScore, margin, td, rd);
+                }
+
+                if (dict.ContainsKey("error") && dict["error"]?.ToString() == "NoReliableGroup")
+                {
+                    string group = dict.TryGetValue("groupLabel", out var g) ? g?.ToString() ?? label : label;
+                    string err = $"Could not reliably scope radio group '{group}'. Fallback to global radio pool rejected to prevent cross-group contamination.";
+                    LogDiagnostic($"[Locator:Radio] {err}");
+                    throw new NoSuchElementException(err);
+                }
+
+                if (dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedElement)
+                {
+                    LogDiagnostic($"[Locator:{controlType}] Resolved '{label}' in {sw.ElapsedMilliseconds}ms via {dict["strategy"]} (Score: {dict["score"]}).");
+                    return matchedElement;
+                }
+            }
+
+            return null;
+        }
+
+        #endregion
+
         #region Text Box Discovery
 
         public IWebElement? FindTextBox(ISearchContext context, string semanticLabel)
@@ -58,42 +187,12 @@ namespace CloudQA.ResilientAutomation.Core
 
             try
             {
-                const string script = @"
+                string script = CommonJsFunctions + @"
                     const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
                     const aliases = arguments[1];
 
-                    function norm(s) {
-                        if (!s) return '';
-                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
-                    }
-
-                    function matchText(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
-                    }
-
-                    function matchOption(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        if (nText === nTarget) return true;
-                        const words = nText.split(/\s+/);
-                        return words.includes(nTarget);
-                    }
-
-                    function isVisible(el) {
-                        if (el.disabled) return false;
-                        const style = window.getComputedStyle(el);
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                        const rects = el.getClientRects();
-                        return (el.offsetWidth > 0 || el.offsetHeight > 0 || rects.length > 0);
-                    }
-
                     const rawInputs = Array.from(root.querySelectorAll(""input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button']), textarea""));
                     const inputs = rawInputs.filter(isVisible);
-
                     if (inputs.length === 0) return null;
 
                     const allLabels = Array.from(root.querySelectorAll('label')).filter(isVisible);
@@ -109,65 +208,94 @@ namespace CloudQA.ResilientAutomation.Core
                         const ariaBy = (input.getAttribute('aria-labelledby') || '').trim();
                         const auto = (input.autocomplete || '').trim();
 
-                        // 1. Explicit label[for='id'] (+100)
+                        // 1. Explicit label[for='id']
                         if (id) {
-                            const expl = allLabels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a)));
+                            const expl = allLabels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a).match));
                             if (expl) {
-                                score += 100;
+                                const m = aliases.map(a => matchText(expl.textContent, a)).find(r => r.match);
+                                score += (m && m.exact) ? 100 : 60;
                                 strategies.push('Label[for=\'' + id + '\']');
                             }
                         }
 
-                        // 2. Enclosing label (+90)
-                        const enclosing = allLabels.find(l => aliases.some(a => matchText(l.textContent, a)) && l.contains(input));
+                        // 2. Enclosing label
+                        const enclosing = allLabels.find(l => aliases.some(a => matchText(l.textContent, a).match) && l.contains(input));
                         if (enclosing) {
-                            score += 90;
+                            const m = aliases.map(a => matchText(enclosing.textContent, a)).find(r => r.match);
+                            score += (m && m.exact) ? 90 : 55;
                             strategies.push('EnclosingLabel');
                         }
 
-                        // 3. Nearby field-container association (+75)
-                        const nearby = allLabels.find(l => {
-                            if (!aliases.some(a => matchText(l.textContent, a))) return false;
-                            const container = l.closest('.form-group, .form-row, .row, .field, [class*=""group""], div, fieldset');
-                            return container ? container.contains(input) : false;
-                        });
-                        if (nearby) {
-                            score += 75;
-                            strategies.push('ContainerProximity');
-                        }
-
-                        // 4. Accessible attributes (+65)
-                        if (aliases.some(a => matchText(aria, a))) {
-                            score += 65;
-                            strategies.push('aria-label');
-                        }
-                        if (ariaBy) {
-                            const byEl = document.getElementById(ariaBy);
-                            if (byEl && aliases.some(a => matchText(byEl.textContent, a))) {
-                                score += 65;
-                                strategies.push('aria-labelledby');
+                        // 3. Nearby field-container association
+                        const container = input.closest('.form-group, .form-row, .row, .field, [class*=""group""], div, fieldset');
+                        if (container) {
+                            const nearbyLabel = Array.from(container.querySelectorAll('label')).find(l => aliases.some(a => matchText(l.textContent, a).match));
+                            if (nearbyLabel) {
+                                const m = aliases.map(a => matchText(nearbyLabel.textContent, a)).find(r => r.match);
+                                score += (m && m.exact) ? 80 : 45;
+                                strategies.push('ContainerProximity');
                             }
                         }
-                        if (aliases.some(a => matchText(auto, a))) {
-                            score += 60;
-                            strategies.push('autocomplete');
+
+                        // 4. Accessible attributes
+                        for (const a of aliases) {
+                            const m = matchText(aria, a);
+                            if (m.match) {
+                                score += m.exact ? 65 : 40;
+                                strategies.push('aria-label');
+                                break;
+                            }
                         }
 
-                        // 5. Semantic attributes (+35 to +45)
-                        if (aliases.some(a => matchText(ph, a))) {
-                            score += 45;
-                            strategies.push('placeholder');
-                        }
-                        if (aliases.some(a => matchText(name, a))) {
-                            score += 40;
-                            strategies.push('name');
-                        }
-                        if (aliases.some(a => matchText(id, a))) {
-                            score += 35;
-                            strategies.push('id');
+                        if (ariaBy) {
+                            const byEl = document.getElementById(ariaBy);
+                            if (byEl) {
+                                for (const a of aliases) {
+                                    const m = matchText(byEl.textContent, a);
+                                    if (m.match) {
+                                        score += m.exact ? 65 : 40;
+                                        strategies.push('aria-labelledby');
+                                        break;
+                                    }
+                                }
+                            }
                         }
 
-                        // Minimum confidence threshold: 40 points
+                        for (const a of aliases) {
+                            const m = matchText(auto, a);
+                            if (m.match) {
+                                score += 50;
+                                strategies.push('autocomplete');
+                                break;
+                            }
+                        }
+
+                        // 5. Semantic attributes
+                        for (const a of aliases) {
+                            const m = matchText(ph, a);
+                            if (m.match) {
+                                score += m.exact ? 45 : 25;
+                                strategies.push('placeholder');
+                                break;
+                            }
+                        }
+                        for (const a of aliases) {
+                            const m = matchText(name, a);
+                            if (m.match) {
+                                score += m.exact ? 40 : 20;
+                                strategies.push('name');
+                                break;
+                            }
+                        }
+                        for (const a of aliases) {
+                            const m = matchText(id, a);
+                            if (m.match) {
+                                score += m.exact ? 35 : 15;
+                                strategies.push('id');
+                                break;
+                            }
+                        }
+
                         if (score >= 40) {
                             candidates.push({
                                 element: input,
@@ -178,40 +306,16 @@ namespace CloudQA.ResilientAutomation.Core
                         }
                     }
 
-                    if (candidates.length === 0) return null;
-                    candidates.sort((a, b) => b.score - a.score);
-
-                    // Ambiguity check: Top 2 candidates tied or within 15 points
-                    if (candidates.length > 1) {
-                        const top = candidates[0];
-                        const runnerUp = candidates[1];
-                        if (runnerUp.score === top.score || (top.score - runnerUp.score < 15 && top.score >= 50)) {
-                            return { ambiguous: true, score: top.score, topDetails: top.details, runnerDetails: runnerUp.details };
-                        }
-                    }
-
-                    return { element: candidates[0].element, score: candidates[0].score, strategy: candidates[0].strategy, details: candidates[0].details };
+                    return evaluateCandidates(candidates, 40);
                 ";
 
                 var res = _js.ExecuteScript(script, context as IWebElement, aliases);
                 sw.Stop();
-
-                if (res is IDictionary<string, object> dict)
-                {
-                    if (dict.ContainsKey("ambiguous") && Convert.ToBoolean(dict["ambiguous"]))
-                    {
-                        dict.TryGetValue("topDetails", out var td);
-                        dict.TryGetValue("runnerDetails", out var rd);
-                        LogDiagnostic($"[Locator:TextBox] Ambiguous match rejected for '{semanticLabel}'. Score: {dict["score"]}. ({td} vs {rd})");
-                        return null;
-                    }
-
-                    if (dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedInput)
-                    {
-                        LogDiagnostic($"[Locator:TextBox] Resolved '{semanticLabel}' in {sw.ElapsedMilliseconds}ms via {dict["strategy"]} (Score: {dict["score"]}).");
-                        return matchedInput;
-                    }
-                }
+                return ProcessCandidateResult(res, "TextBox", semanticLabel, sw);
+            }
+            catch (AmbiguousMatchException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -231,73 +335,60 @@ namespace CloudQA.ResilientAutomation.Core
 
             try
             {
-                const string script = @"
+                string script = CommonJsFunctions + @"
                     const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
                     const optionText = arguments[1];
                     const groupLabel = arguments[2];
 
-                    function norm(s) {
-                        if (!s) return '';
-                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
-                    }
-
-                    function matchText(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
-                    }
-
-                    function matchOption(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        if (nText === nTarget) return true;
-                        const words = nText.split(/\s+/);
-                        return words.includes(nTarget);
-                    }
-
-                    function isVisible(el) {
-                        if (el.disabled) return false;
-                        const style = window.getComputedStyle(el);
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                        const rects = el.getClientRects();
-                        return (el.offsetWidth > 0 || el.offsetHeight > 0 || rects.length > 0);
-                    }
-
                     const rawRadios = Array.from(root.querySelectorAll(""input[type='radio']""));
                     const radios = rawRadios.filter(isVisible);
-
                     if (radios.length === 0) return null;
 
-                    // Group Discovery: ARIA role='radiogroup', fieldset > legend, container heading, or name/id
                     let pool = [];
 
-                    // 1. Check role='radiogroup' or fieldsets with matching legend / aria
-                    const groups = Array.from(root.querySelectorAll('[role=""radiogroup""], fieldset')).filter(g => {
+                    // 1. role='radiogroup'
+                    const ariaGroups = Array.from(root.querySelectorAll('[role=""radiogroup""]')).filter(g => {
                         const aria = (g.getAttribute('aria-label') || '').trim();
                         const ariaBy = (g.getAttribute('aria-labelledby') || '').trim();
-                        const legend = g.querySelector('legend');
-                        const legendText = legend ? legend.textContent : '';
                         const byEl = ariaBy ? document.getElementById(ariaBy) : null;
                         const byText = byEl ? byEl.textContent : '';
-                        return matchText(aria, groupLabel) || matchText(legendText, groupLabel) || matchText(byText, groupLabel);
+                        return matchText(aria, groupLabel).match || matchText(byText, groupLabel).match;
                     });
-
-                    if (groups.length > 0) {
-                        pool = Array.from(groups[0].querySelectorAll(""input[type='radio']"")).filter(isVisible);
+                    if (ariaGroups.length > 0) {
+                        pool = Array.from(ariaGroups[0].querySelectorAll(""input[type='radio']"")).filter(isVisible);
                     }
 
-                    // 2. Fallback to name/id attribute matching group
+                    // 2. fieldset with legend
                     if (pool.length === 0) {
-                        pool = radios.filter(r => matchText(r.name, groupLabel) || matchText(r.id, groupLabel));
+                        const fieldsets = Array.from(root.querySelectorAll('fieldset')).filter(f => {
+                            const legend = f.querySelector('legend');
+                            return legend ? matchText(legend.textContent, groupLabel).match : false;
+                        });
+                        if (fieldsets.length > 0) {
+                            pool = Array.from(fieldsets[0].querySelectorAll(""input[type='radio']"")).filter(isVisible);
+                        }
                     }
 
-                    // 3. Fallback to container heading/label nearby
+                    // 3. Container with aria-label or aria-labelledby
+                    if (pool.length === 0) {
+                        const ariaContainers = Array.from(root.querySelectorAll('[aria-label], [aria-labelledby]')).filter(c => {
+                            if (c.getAttribute('role') === 'radiogroup') return false;
+                            const aria = (c.getAttribute('aria-label') || '').trim();
+                            const ariaBy = (c.getAttribute('aria-labelledby') || '').trim();
+                            const byEl = ariaBy ? document.getElementById(ariaBy) : null;
+                            const byText = byEl ? byEl.textContent : '';
+                            return matchText(aria, groupLabel).match || matchText(byText, groupLabel).match;
+                        });
+                        if (ariaContainers.length > 0) {
+                            pool = Array.from(ariaContainers[0].querySelectorAll(""input[type='radio']"")).filter(isVisible);
+                        }
+                    }
+
+                    // 4. Group heading / label + local container
                     if (pool.length === 0) {
                         const headings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, label, span, p, div')).filter(el => {
                             const t = el.textContent || '';
-                            return matchText(t, groupLabel) && el.querySelectorAll('input').length === 0;
+                            return matchText(t, groupLabel).match && el.querySelectorAll('input').length === 0;
                         });
 
                         if (headings.length > 0) {
@@ -309,7 +400,16 @@ namespace CloudQA.ResilientAutomation.Core
                         }
                     }
 
-                    if (pool.length === 0) pool = radios;
+                    // 5. Radio semantic name
+                    if (pool.length === 0) {
+                        const namedRadios = radios.filter(r => matchText(r.name, groupLabel).match);
+                        if (namedRadios.length > 0) pool = namedRadios;
+                    }
+
+                    // Rejection rule: If no reliable group identified, never search all radios globally
+                    if (pool.length === 0) {
+                        return { error: 'NoReliableGroup', groupLabel: groupLabel };
+                    }
 
                     const allLabels = Array.from(root.querySelectorAll('label')).filter(isVisible);
                     const candidates = [];
@@ -334,7 +434,7 @@ namespace CloudQA.ResilientAutomation.Core
                             strategies.push('id');
                         }
 
-                        // Visible Option Text (closest label, sibling text, or parent text)
+                        // Visible Option Text
                         let visibleText = '';
                         const directLabel = radio.closest('label');
                         if (directLabel) {
@@ -371,37 +471,20 @@ namespace CloudQA.ResilientAutomation.Core
                         }
                     }
 
-                    if (candidates.length === 0) return null;
-                    candidates.sort((a, b) => b.score - a.score);
-
-                    if (candidates.length > 1) {
-                        const top = candidates[0];
-                        const runnerUp = candidates[1];
-                        if (runnerUp.score === top.score) {
-                            return { ambiguous: true, score: top.score };
-                        }
-                    }
-
-                    return { element: candidates[0].element, score: candidates[0].score, strategy: candidates[0].strategy };
+                    return evaluateCandidates(candidates, 50);
                 ";
 
                 var res = _js.ExecuteScript(script, context as IWebElement, optionText, groupLabel);
                 sw.Stop();
-
-                if (res is IDictionary<string, object> dict)
-                {
-                    if (dict.ContainsKey("ambiguous") && Convert.ToBoolean(dict["ambiguous"]))
-                    {
-                        LogDiagnostic($"[Locator:Radio] Ambiguous radio match rejected for '{optionText}' in group '{groupLabel}'.");
-                        return null;
-                    }
-
-                    if (dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedRadio)
-                    {
-                        LogDiagnostic($"[Locator:Radio] Resolved '{optionText}' in group '{groupLabel}' in {sw.ElapsedMilliseconds}ms via {dict["strategy"]} (Score: {dict["score"]}).");
-                        return matchedRadio;
-                    }
-                }
+                return ProcessCandidateResult(res, "Radio", $"{groupLabel}:{optionText}", sw);
+            }
+            catch (AmbiguousMatchException)
+            {
+                throw;
+            }
+            catch (NoSuchElementException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -413,51 +496,21 @@ namespace CloudQA.ResilientAutomation.Core
 
         #endregion
 
-        #region Dropdown Discovery
+        #region Dropdown & Combobox Discovery
 
         public IWebElement? FindDropdown(ISearchContext context, string semanticLabel)
         {
             var sw = Stopwatch.StartNew();
-            var aliases = new[] { semanticLabel, "state", "province", "region" };
+            var aliases = GetFieldAliases(semanticLabel);
 
             try
             {
-                const string script = @"
+                string script = CommonJsFunctions + @"
                     const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
                     const aliases = arguments[1];
 
-                    function norm(s) {
-                        if (!s) return '';
-                        return s.toString().trim().toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ');
-                    }
-
-                    function matchText(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        return nText === nTarget || nText.includes(nTarget) || nTarget.includes(nText);
-                    }
-
-                    function matchOption(text, target) {
-                        const nText = norm(text);
-                        const nTarget = norm(target);
-                        if (!nText || !nTarget) return false;
-                        if (nText === nTarget) return true;
-                        const words = nText.split(/\s+/);
-                        return words.includes(nTarget);
-                    }
-
-                    function isVisible(el) {
-                        if (el.disabled) return false;
-                        const style = window.getComputedStyle(el);
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                        const rects = el.getClientRects();
-                        return (el.offsetWidth > 0 || el.offsetHeight > 0 || rects.length > 0);
-                    }
-
                     const rawSelects = Array.from(root.querySelectorAll('select, [role=""combobox""]'));
                     const selects = rawSelects.filter(isVisible);
-
                     if (selects.length === 0) return null;
 
                     const allLabels = Array.from(root.querySelectorAll('label')).filter(isVisible);
@@ -470,86 +523,105 @@ namespace CloudQA.ResilientAutomation.Core
                         const name = (select.name || '').trim();
                         const aria = (select.getAttribute('aria-label') || '').trim();
                         const ariaBy = (select.getAttribute('aria-labelledby') || '').trim();
+                        const isCombobox = select.getAttribute('role') === 'combobox';
 
+                        // 1. Explicit label[for]
                         if (id) {
-                            const expl = allLabels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a)));
+                            const expl = allLabels.find(l => (l.htmlFor || '').toLowerCase() === id.toLowerCase() && aliases.some(a => matchText(l.textContent, a).match));
                             if (expl) {
-                                score += 100;
+                                const m = aliases.map(a => matchText(expl.textContent, a)).find(r => r.match);
+                                score += (m && m.exact) ? 100 : 70;
                                 strategies.push('Label[for]');
                             }
                         }
 
-                        const nearby = allLabels.find(l => aliases.some(a => matchText(l.textContent, a)));
-                        if (nearby) {
-                            const container = nearby.closest('.form-group, .row, .field, div, fieldset');
-                            if (container && container.contains(select)) {
-                                score += 85;
+                        // 2. Enclosing label
+                        const enclosing = allLabels.find(l => aliases.some(a => matchText(l.textContent, a).match) && l.contains(select));
+                        if (enclosing) {
+                            const m = aliases.map(a => matchText(enclosing.textContent, a)).find(r => r.match);
+                            score += (m && m.exact) ? 95 : 70;
+                            strategies.push('EnclosingLabel');
+                        }
+
+                        // 3. Container proximity
+                        const container = select.closest('.form-group, .row, .field, div, fieldset');
+                        if (container) {
+                            const nearbyLabel = Array.from(container.querySelectorAll('label')).find(l => aliases.some(a => matchText(l.textContent, a).match));
+                            if (nearbyLabel) {
+                                const m = aliases.map(a => matchText(nearbyLabel.textContent, a)).find(r => r.match);
+                                score += (m && m.exact) ? 85 : 55;
                                 strategies.push('ContainerProximity');
                             }
                         }
 
-                        if (aliases.some(a => matchText(aria, a))) {
-                            score += 65;
-                            strategies.push('aria-label');
-                        }
-                        if (ariaBy) {
-                            const byEl = document.getElementById(ariaBy);
-                            if (byEl && aliases.some(a => matchText(byEl.textContent, a))) {
-                                score += 65;
-                                strategies.push('aria-labelledby');
+                        // 4. Accessible attributes
+                        for (const a of aliases) {
+                            const m = matchText(aria, a);
+                            if (m.match) {
+                                score += m.exact ? 65 : 40;
+                                strategies.push('aria-label');
+                                break;
                             }
                         }
-                        if (aliases.some(a => matchText(name, a))) {
-                            score += 45;
-                            strategies.push('name');
-                        }
-                        if (aliases.some(a => matchText(id, a))) {
-                            score += 40;
-                            strategies.push('id');
+
+                        if (ariaBy) {
+                            const byEl = document.getElementById(ariaBy);
+                            if (byEl) {
+                                for (const a of aliases) {
+                                    const m = matchText(byEl.textContent, a);
+                                    if (m.match) {
+                                        score += m.exact ? 65 : 40;
+                                        strategies.push('aria-labelledby');
+                                        break;
+                                    }
+                                }
+                            }
                         }
 
-                        // Strict rule: must have positive semantic evidence (score >= 40)
+                        // 5. Semantic attributes
+                        for (const a of aliases) {
+                            const m = matchText(name, a);
+                            if (m.match) {
+                                score += m.exact ? 45 : 25;
+                                strategies.push('name');
+                                break;
+                            }
+                        }
+
+                        for (const a of aliases) {
+                            const m = matchText(id, a);
+                            if (m.match) {
+                                score += m.exact ? 40 : 20;
+                                strategies.push('id');
+                                break;
+                            }
+                        }
+
+                        if (isCombobox) {
+                            score += 15;
+                            strategies.push('role=combobox');
+                        }
+
                         if (score >= 40) {
                             candidates.push({
                                 element: select,
                                 score: score,
                                 strategy: strategies.join(' + '),
-                                details: `<select id='${id}' name='${name}'>`
+                                details: `<${select.tagName.toLowerCase()} id='${id}' name='${name}' role='${select.getAttribute('role') || ''}'>`
                             });
                         }
                     }
 
-                    if (candidates.length === 0) return null;
-                    candidates.sort((a, b) => b.score - a.score);
-
-                    if (candidates.length > 1) {
-                        const top = candidates[0];
-                        const runnerUp = candidates[1];
-                        if (runnerUp.score === top.score || (top.score - runnerUp.score < 15 && top.score >= 50)) {
-                            return { ambiguous: true, score: top.score };
-                        }
-                    }
-
-                    return { element: candidates[0].element, score: candidates[0].score, strategy: candidates[0].strategy };
+                    return evaluateCandidates(candidates, 40);
                 ";
 
                 var res = _js.ExecuteScript(script, context as IWebElement, aliases);
                 sw.Stop();
-
-                if (res is IDictionary<string, object> dict)
-                {
-                    if (dict.ContainsKey("ambiguous") && Convert.ToBoolean(dict["ambiguous"]))
-                    {
-                        LogDiagnostic($"[Locator:Dropdown] Ambiguous dropdown match rejected for '{semanticLabel}'.");
-                        return null;
-                    }
-
-                    if (dict.TryGetValue("element", out var elObj) && elObj is IWebElement matchedSelect)
-                    {
-                        LogDiagnostic($"[Locator:Dropdown] Resolved '{semanticLabel}' in {sw.ElapsedMilliseconds}ms via {dict["strategy"]} (Score: {dict["score"]}).");
-                        return matchedSelect;
-                    }
-                }
+                return ProcessCandidateResult(res, "Dropdown", semanticLabel, sw);
+            }
+            catch (AmbiguousMatchException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -565,24 +637,85 @@ namespace CloudQA.ResilientAutomation.Core
 
         public IWebElement? FindSubmitButton(ISearchContext context)
         {
-            var buttons = context.FindElements(By.CssSelector("button, input[type='submit'], input[type='button'], a.btn"))
-                                 .Where(b => b.Displayed && b.Enabled).ToList();
-            var keywords = new[] { "submit", "save", "send", "register", "done" };
+            var sw = Stopwatch.StartNew();
 
-            var match = buttons.FirstOrDefault(b =>
+            try
             {
-                var text = (b.Text ?? "").Trim();
-                var val = (b.GetAttribute("value") ?? "").Trim();
-                var aria = (b.GetAttribute("aria-label") ?? "").Trim();
-                return keywords.Any(k => MatchText(text, k) || MatchText(val, k) || MatchText(aria, k));
-            });
+                string script = CommonJsFunctions + @"
+                    const root = (arguments[0] && arguments[0].querySelectorAll) ? arguments[0] : document;
+                    const rawButtons = Array.from(root.querySelectorAll(""button, input[type='submit'], input[type='button'], a.btn, [role='button']""));
+                    const buttons = rawButtons.filter(isVisible);
+                    if (buttons.length === 0) return null;
 
-            return match ?? buttons.FirstOrDefault();
+                    const keywords = ['submit', 'save', 'send', 'register', 'done'];
+                    const candidates = [];
+
+                    for (const btn of buttons) {
+                        let score = 0;
+                        const strategies = [];
+                        const text = (btn.innerText || btn.textContent || '').trim();
+                        const val = (btn.value || '').trim();
+                        const aria = (btn.getAttribute('aria-label') || '').trim();
+                        const type = (btn.getAttribute('type') || '').trim();
+
+                        if (type.toLowerCase() === 'submit') {
+                            score += 40;
+                            strategies.push('type=submit');
+                        }
+
+                        for (const kw of keywords) {
+                            const mt = matchText(text, kw);
+                            if (mt.match) {
+                                score += mt.exact ? 60 : 35;
+                                strategies.push('text=' + kw);
+                                break;
+                            }
+                            const mv = matchText(val, kw);
+                            if (mv.match) {
+                                score += mv.exact ? 50 : 30;
+                                strategies.push('value=' + kw);
+                                break;
+                            }
+                            const ma = matchText(aria, kw);
+                            if (ma.match) {
+                                score += ma.exact ? 50 : 30;
+                                strategies.push('aria=' + kw);
+                                break;
+                            }
+                        }
+
+                        if (score >= 40) {
+                            candidates.push({
+                                element: btn,
+                                score: score,
+                                strategy: strategies.join(' + '),
+                                details: `<${btn.tagName.toLowerCase()} type='${type}' text='${text}'>`
+                            });
+                        }
+                    }
+
+                    return evaluateCandidates(candidates, 40);
+                ";
+
+                var res = _js.ExecuteScript(script, context as IWebElement);
+                sw.Stop();
+                return ProcessCandidateResult(res, "SubmitButton", "Submit", sw);
+            }
+            catch (AmbiguousMatchException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic($"[Locator:SubmitButton] Diagnostic error: {ex.Message}");
+            }
+
+            return null;
         }
 
         public IWebElement? FindCheckbox(ISearchContext context, string label)
         {
-            var checkboxes = context.FindElements(By.CssSelector("input[type='checkbox']")).Where(c => c.Displayed).ToList();
+            var checkboxes = context.FindElements(By.CssSelector("input[type='checkbox']")).Where(c => c.Displayed && c.Enabled).ToList();
             foreach (var cb in checkboxes)
             {
                 var val = cb.GetAttribute("value") ?? "";
@@ -597,27 +730,6 @@ namespace CloudQA.ResilientAutomation.Core
                 catch { }
             }
             return null;
-        }
-
-        public void FillRichTextEditor(ISearchContext context, string semanticLabel, string content)
-        {
-            try
-            {
-                var editable = context.FindElements(By.CssSelector("div.note-editable, div[contenteditable='true']")).FirstOrDefault(e => e.Displayed);
-                if (editable != null)
-                {
-                    _js.ExecuteScript("arguments[0].innerHTML = '<p>' + arguments[1] + '</p>'; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", editable, content);
-                    return;
-                }
-
-                var textarea = FindTextBox(context, semanticLabel);
-                if (textarea != null)
-                {
-                    textarea.Clear();
-                    textarea.SendKeys(content);
-                }
-            }
-            catch { }
         }
 
         public IWebElement? DiscoverMainRootForm(IWebDriver driver)
@@ -658,7 +770,7 @@ namespace CloudQA.ResilientAutomation.Core
             if (clean == "first name") return new[] { "first name", "firstname", "fname", "given name", "given-name" };
             if (clean == "last name") return new[] { "last name", "lastname", "lname", "surname", "family name" };
             if (clean == "gender") return new[] { "gender", "sex" };
-            if (clean == "state") return new[] { "state", "province", "region" };
+            if (clean == "state") return new[] { "state", "province", "region", "province state", "state province" };
             return new[] { semanticLabel };
         }
 

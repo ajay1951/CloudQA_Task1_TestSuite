@@ -331,9 +331,8 @@ namespace CloudQA.ResilientAutomation.Tests
                 </body></html>";
 
             LoadHtml(html);
-            var match = _finder.FindTextBox(_driver, "First Name");
-
-            Assert.That(match, Is.Null, "Expected null due to ambiguity rejection between two identically scored inputs.");
+            var ex = Assert.Throws<AmbiguousMatchException>(() => _finder.FindTextBox(_driver, "First Name"));
+            Assert.That(ex!.ScoreMargin, Is.LessThan(15));
         }
 
         #endregion
@@ -558,6 +557,311 @@ namespace CloudQA.ResilientAutomation.Tests
             // 3. Requesting a non-existent State option must throw NoSuchElementException (no silent fallback!)
             var stateEx = Assert.Throws<NoSuchElementException>(() => page.SelectState("California"));
             Assert.That(stateEx!.Message, Does.Contain("California"));
+        }
+
+        #endregion
+
+        #region 13. Near-Score Ambiguity (< 15 Point Difference)
+
+        [Test]
+        [Description("Fixture 13 (TC13): Two candidates have confidence scores within 15 points. Asserts AmbiguousMatchException.")]
+        public void Fixture_13_Near_Score_Ambiguity()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <div class='row'>
+                            <label for='fn1'>First Name</label>
+                            <input id='fn1' name='firstname' />
+                        </div>
+                        <div class='row'>
+                            <label>First Name <input id='fn2' placeholder='First Name' /></label>
+                        </div>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            var ex = Assert.Throws<AmbiguousMatchException>(() => page.SetFirstName("Ambiguous"));
+            Assert.That(ex!.ScoreMargin, Is.LessThan(15));
+            Assert.That(ex.ControlType, Is.EqualTo("TextBox"));
+        }
+
+        #endregion
+
+        #region 14. Duplicate Radio Options in Different Groups
+
+        [Test]
+        [Description("Fixture 14 (TC14): Multiple groups contain overlapping option text (Male/Female). Only the requested Gender group is selected.")]
+        public void Fixture_14_Duplicate_Radio_Options_In_Different_Groups()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <!-- Group 1: Marital Status -->
+                        <fieldset>
+                            <legend>Marital Status</legend>
+                            <label><input type='radio' name='marital' id='m_male' value='Male'> Male</label>
+                            <label><input type='radio' name='marital' id='m_female' value='Female'> Female</label>
+                        </fieldset>
+
+                        <!-- Group 2: Gender -->
+                        <fieldset>
+                            <legend>Gender</legend>
+                            <label><input type='radio' name='gender' id='g_male' value='Male'> Male</label>
+                            <label><input type='radio' name='gender' id='g_female' value='Female'> Female</label>
+                        </fieldset>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            page.SelectGender("Male");
+
+            var genderMale = _driver.FindElement(By.Id("g_male"));
+            var maritalMale = _driver.FindElement(By.Id("m_male"));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(genderMale.Selected, Is.True, "Gender 'Male' radio button should be selected.");
+                Assert.That(maritalMale.Selected, Is.False, "Marital Status 'Male' radio button must NOT be selected.");
+                Assert.That(page.IsGenderSelected("Male"), Is.True);
+            });
+        }
+
+        #endregion
+
+        #region 15. ARIA-Only Radio Group
+
+        [Test]
+        [Description("Fixture 15 (TC15): Radio group with pure ARIA attributes and no standard HTML names/ids.")]
+        public void Fixture_15_Aria_Only_Radio_Group()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <div role='radiogroup' aria-label='Gender'>
+                            <input type='radio' aria-label='Male' id='aria_m' />
+                            <input type='radio' aria-label='Female' id='aria_f' />
+                        </div>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            page.SelectGender("Male");
+
+            var ariaMale = _driver.FindElement(By.Id("aria_m"));
+            Assert.Multiple(() =>
+            {
+                Assert.That(ariaMale.Selected, Is.True);
+                Assert.That(page.IsGenderSelected("Male"), Is.True);
+            });
+        }
+
+        #endregion
+
+        #region 16. Custom ARIA Combobox (role=combobox, role=listbox, role=option)
+
+        [Test]
+        [Description("Fixture 16 (TC16): Selects option in dynamic ARIA combobox and verifies selected state.")]
+        public void Fixture_16_Custom_Aria_Combobox()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <div class='form-group'>
+                            <label id='state-lbl'>State</label>
+                            <div role='combobox' 
+                                 id='custom-state' 
+                                 aria-labelledby='state-lbl' 
+                                 aria-controls='state-list' 
+                                 aria-expanded='false' 
+                                 tabindex='0'
+                                 onclick=""document.getElementById('state-list').style.display='block'; this.setAttribute('aria-expanded', 'true');"">
+                                Select State
+                            </div>
+                        </div>
+
+                        <ul role='listbox' id='state-list' style='display:none;'>
+                            <li role='option' id='opt1' onclick=""document.getElementById('custom-state').innerText='United States'; this.setAttribute('aria-selected','true');"">United States</li>
+                            <li role='option' id='opt2' onclick=""document.getElementById('custom-state').innerText='India'; this.setAttribute('aria-selected','true');"">India</li>
+                        </ul>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            page.SelectState("India");
+
+            Assert.That(page.GetSelectedState(), Does.Contain("India"));
+        }
+
+        #endregion
+
+        #region 17. Dynamic DOM Replacement & Stale Element Recovery
+
+        [Test]
+        [Description("Fixture 17 (TC17): Element node is replaced dynamically in DOM; verifies safe stale element recovery.")]
+        public void Fixture_17_Dynamic_DOM_Replacement_Stale_Recovery()
+        {
+            const string html = @"
+                <html><body>
+                    <form id='dynamic-form'>
+                        <div id='container' class='form-group'>
+                            <label for='fn_dyn'>First Name</label>
+                            <input id='fn_dyn' name='firstname' value='initial' />
+                        </div>
+                    </form>
+                    <script>
+                        window.replaceInput = function() {
+                            const container = document.getElementById('container');
+                            const old = document.getElementById('fn_dyn');
+                            if (old) {
+                                old.remove();
+                                const fresh = document.createElement('input');
+                                fresh.id = 'fn_dyn';
+                                fresh.name = 'firstname';
+                                container.appendChild(fresh);
+                            }
+                        };
+                    </script>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            // Invalidate DOM node
+            ((IJavaScriptExecutor)_driver).ExecuteScript("window.replaceInput();");
+
+            page.SetFirstName("RecoveredValue");
+
+            Assert.That(page.GetFirstNameValue(), Is.EqualTo("RecoveredValue"));
+        }
+
+        #endregion
+
+        #region 18. Disabled Duplicate Controls Filtering
+
+        [Test]
+        [Description("Fixture 18 (TC18): Form contains disabled and enabled controls with identical labels; disabled must be ignored.")]
+        public void Fixture_18_Disabled_Duplicate_Controls()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <div class='form-group'>
+                            <label for='fn_dis'>First Name</label>
+                            <input id='fn_dis' disabled value='ShouldNotTouch' />
+                        </div>
+                        <div class='form-group'>
+                            <label for='fn_en'>First Name</label>
+                            <input id='fn_en' />
+                        </div>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            page.SetFirstName("TargetEnabled");
+
+            var disabledInput = _driver.FindElement(By.Id("fn_dis"));
+            var enabledInput = _driver.FindElement(By.Id("fn_en"));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(enabledInput.GetAttribute("value"), Is.EqualTo("TargetEnabled"));
+                Assert.That(disabledInput.GetAttribute("value"), Is.EqualTo("ShouldNotTouch"));
+            });
+        }
+
+        #endregion
+
+        #region 19. Punctuation and Text Normalization
+
+        [Test]
+        [Description("Fixture 19 (TC19): Field labels with hyphens, punctuation, and extra whitespace correctly resolve.")]
+        public void Fixture_19_Punctuation_And_Text_Normalization()
+        {
+            const string html = @"
+                <html><body>
+                    <form>
+                        <!-- Noise field containing First Name as substring -->
+                        <div class='form-group'>
+                            <label for='billing_fn'>Billing First Name</label>
+                            <input id='billing_fn' value='BillingUntouched' />
+                        </div>
+
+                        <!-- Target field with punctuation and formatting -->
+                        <div class='form-group'>
+                            <label for='real_fn'>* First-Name : (Required)</label>
+                            <input id='real_fn' />
+                        </div>
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+            var page = new PracticeFormPage(_driver, 5);
+
+            page.SetFirstName("NormalizedWinner");
+
+            var realInput = _driver.FindElement(By.Id("real_fn"));
+            var billingInput = _driver.FindElement(By.Id("billing_fn"));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(realInput.GetAttribute("value"), Is.EqualTo("NormalizedWinner"));
+                Assert.That(billingInput.GetAttribute("value"), Is.EqualTo("BillingUntouched"), "Billing field must not be modified.");
+            });
+        }
+
+        #endregion
+
+        #region 20. Multiple Forms Scoping & Ambiguity Rejection
+
+        [Test]
+        [Description("Fixture 20 (TC20): Two distinct forms on page. Scoped page fills target form; unscoped page throws ambiguity.")]
+        public void Fixture_20_Multiple_Forms_Scoping()
+        {
+            const string html = @"
+                <html><body>
+                    <form id='shipping-form'>
+                        <h3>Shipping Info</h3>
+                        <label for='s_fname'>First Name</label>
+                        <input id='s_fname' />
+                    </form>
+
+                    <form id='billing-form'>
+                        <h3>Billing Info</h3>
+                        <label for='b_fname'>First Name</label>
+                        <input id='b_fname' />
+                    </form>
+                </body></html>";
+
+            LoadHtml(html);
+
+            // 1. Unscoped global context should detect ambiguity between two identical First Name forms
+            var unscopedPage = new PracticeFormPage(_driver, 5);
+            Assert.Throws<AmbiguousMatchException>(() => unscopedPage.SetFirstName("GlobalConflict"));
+
+            // 2. Scoped to shipping form should specifically populate shipping form
+            var shippingForm = _driver.FindElement(By.Id("shipping-form"));
+            var shippingPage = new PracticeFormPage(_driver, 5, shippingForm);
+            shippingPage.SetFirstName("Alice");
+
+            var sInput = _driver.FindElement(By.Id("s_fname"));
+            var bInput = _driver.FindElement(By.Id("b_fname"));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(sInput.GetAttribute("value"), Is.EqualTo("Alice"));
+                Assert.That(bInput.GetAttribute("value"), Is.Empty, "Billing form input must remain untouched.");
+            });
         }
 
         #endregion

@@ -1,4 +1,4 @@
-name: Build & Test CI
+name: CloudQA Task 1 CI
 
 on:
   push:
@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
-    name: Build & Resilient Test Suite
+  build:
+    name: Build & Compile (.NET 10)
     runs-on: ubuntu-latest
 
     steps:
@@ -32,28 +32,111 @@ jobs:
       - name: Restore Dependencies
         run: dotnet restore
 
+      - name: Build Solution in Release Mode
+        run: dotnet build --no-restore -c Release
+
+  controlled-resilience-tests:
+    name: Controlled Mutation Resilience Suite (TC01-TC20)
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore Dependencies
+        run: dotnet restore
+
       - name: Build Solution
         run: dotnet build --no-restore -c Release
 
-      - name: Run Controlled Resilience Mutation Tests
+      - name: Execute 20 Controlled Mutation Tests
         run: >
           dotnet test --no-build -c Release 
           --filter "Category=Resilience" 
           --logger "trx;LogFileName=resilience_results.trx" 
           -- NUnit.Headless="true"
 
-      - name: Run Live E2E Smoke Tests
-        continue-on-error: true
+      - name: Upload Controlled Test Results & Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resilience-test-results
+          path: |
+            **/TestResults/*.trx
+            Screenshots/*.png
+
+  browser-verification-tests:
+    name: Browser Verification & Settings Suite
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore Dependencies
+        run: dotnet restore
+
+      - name: Build Solution
+        run: dotnet build --no-restore -c Release
+
+      - name: Execute Browser Verification Tests
+        run: >
+          dotnet test --no-build -c Release 
+          --filter "Category=BrowserVerification" 
+          --logger "trx;LogFileName=browser_results.trx" 
+          -- NUnit.Headless="true"
+
+      - name: Upload Browser Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: '**/TestResults/*.trx'
+
+  live-e2e-smoke-tests:
+    name: Live Site E2E Smoke Tests
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore Dependencies
+        run: dotnet restore
+
+      - name: Build Solution
+        run: dotnet build --no-restore -c Release
+
+      - name: Execute Live Practice Form E2E Tests
         run: >
           dotnet test --no-build -c Release 
           --filter "Category=E2E" 
           --logger "trx;LogFileName=e2e_results.trx" 
           -- NUnit.Headless="true"
 
-      - name: Upload Test Results
+      - name: Upload E2E Test Results & Screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: '**/TestResults/*.trx'
-
+          name: live-e2e-results
+          path: |
+            **/TestResults/*.trx
+            Screenshots/*.png
