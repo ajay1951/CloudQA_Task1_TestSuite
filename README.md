@@ -278,6 +278,8 @@ TRX test reports and failure screenshots are published as artifacts on every run
 
 ## 7. Known Limitations & Edge Cases
 
+For an in-depth architectural breakdown, scoring rubric analysis, and mitigations, refer to [**APPROACH_AND_LIMITATIONS.md**](APPROACH_AND_LIMITATIONS.md).
+
 1. **Canvas / WebGL Controls**: Forms rendered inside `<canvas>` or WebGL contexts have no DOM elements or accessibility nodes and require computer vision / OCR models.
 2. **Closed Shadow DOM (`mode: "closed"`)**: Elements inside Shadow Roots with closed encapsulation cannot be accessed by external scripts without custom browser devtools protocol hooks.
 3. **Unlabeled Icon-Only Elements with No Tooltips**: Fields that lack text labels, ARIA attributes, placeholders, or names cannot be semantically resolved without machine vision.
