@@ -17,11 +17,52 @@ namespace CloudQA.ResilientAutomation
             Console.WriteLine("==================================================================");
 
             var settings = TestSettings.Load();
+            int slowMoMs = settings.Headless ? 0 : 800;
 
-            // Override TargetUrl if provided as CLI argument: dotnet run -- "https://modified-url"
-            if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]) && args[0].StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            // Parse CLI arguments:
+            // e.g. dotnet run
+            //      dotnet run -- "https://modified-url"
+            //      dotnet run -- --headless false
+            //      dotnet run -- --headless true
+            //      dotnet run -- --browser Firefox
+            //      dotnet run -- --slow-mo 1000
+            for (int i = 0; i < args.Length; i++)
             {
-                settings.TargetUrl = args[0].Trim();
+                var arg = args[i].Trim();
+                if (arg.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    settings.TargetUrl = arg;
+                }
+                else if (arg.Equals("--headless", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && bool.TryParse(args[i + 1], out bool hVal))
+                    {
+                        settings.Headless = hVal;
+                        i++;
+                    }
+                    else
+                    {
+                        settings.Headless = true;
+                    }
+                }
+                else if (arg.Equals("--browser", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    settings.Browser = args[++i].Trim();
+                }
+                else if (arg.Equals("--url", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    settings.TargetUrl = args[++i].Trim();
+                }
+                else if (arg.Equals("--slow-mo", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && int.TryParse(args[i + 1], out int smVal))
+                {
+                    slowMoMs = Math.Max(0, smVal);
+                    i++;
+                }
+            }
+
+            if (settings.Headless)
+            {
+                slowMoMs = 0;
             }
 
             Console.WriteLine($"[Config] Target URL: {settings.TargetUrl}");
@@ -31,6 +72,14 @@ namespace CloudQA.ResilientAutomation
             Console.WriteLine($"[Config] Last Name:  {settings.LastName}");
             Console.WriteLine($"[Config] Gender:     {settings.Gender}");
             Console.WriteLine($"[Config] State:      {settings.State}");
+            if (!settings.Headless)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("------------------------------------------------------------------");
+                Console.WriteLine(">> LIVE BROWSER MODE: Opening interactive desktop browser window.");
+                Console.WriteLine(">> Watch navigation, field entry, and selections live on screen.");
+                Console.ResetColor();
+            }
             Console.WriteLine("------------------------------------------------------------------");
 
             IWebDriver? driver = null;
@@ -40,6 +89,7 @@ namespace CloudQA.ResilientAutomation
                 driver = DriverFactory.CreateDriver(settings);
                 Console.WriteLine($"[1/4] Navigating to target URL: {settings.TargetUrl}");
                 driver.Navigate().GoToUrl(settings.TargetUrl);
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 var finder = new ResilientElementFinder(driver, settings.TimeoutSeconds);
                 var root = finder.DiscoverMainRootForm(driver);
@@ -48,15 +98,19 @@ namespace CloudQA.ResilientAutomation
                 Console.WriteLine("\n[2/4] Automating fields using resilient discovery engine...");
                 page.SetFirstName(settings.FirstName);
                 Console.WriteLine($"  ✓ Entered First Name: '{settings.FirstName}'");
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 page.SetLastName(settings.LastName);
                 Console.WriteLine($"  ✓ Entered Last Name:  '{settings.LastName}'");
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 page.SelectGender(settings.Gender);
                 Console.WriteLine($"  ✓ Selected Gender:    '{settings.Gender}'");
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 page.SelectState(settings.State);
                 Console.WriteLine($"  ✓ Selected State:     '{settings.State}'");
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 Console.WriteLine("\n[3/4] Verifying all pre-submission values...");
                 var actualName = page.GetFirstNameValue();
@@ -70,6 +124,7 @@ namespace CloudQA.ResilientAutomation
                 Console.WriteLine($"  • First Name Verification: '{actualName}' -> {(nameVerified ? "PASS" : "FAIL")}");
                 Console.WriteLine($"  • Gender Selection State:  '{settings.Gender}' -> {(genderVerified ? "PASS" : "FAIL")}");
                 Console.WriteLine($"  • State Selection State:   '{actualState}' -> {(stateVerified ? "PASS" : "FAIL")}");
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
 
                 if (!nameVerified || !genderVerified || !stateVerified)
                 {
@@ -88,18 +143,26 @@ namespace CloudQA.ResilientAutomation
                 var preSubmitUrl = driver.Url;
                 page.ClickSubmit();
 
-                Thread.Sleep(1000);
+                if (slowMoMs > 0) Thread.Sleep(slowMoMs);
+                else Thread.Sleep(1000);
 
                 // Verify post-submission state: alert confirmation, navigation, or DOM state
                 try
                 {
                     var alert = driver.SwitchTo().Alert();
                     Console.WriteLine($"  ✓ Handled confirmation alert: '{alert.Text}'");
+                    if (slowMoMs > 0) Thread.Sleep(1000); // Allow human to read alert before accepting
                     alert.Accept();
                 }
                 catch (NoAlertPresentException)
                 {
                     Console.WriteLine($"  ✓ Submission trigger executed (Current URL: {driver.Url})");
+                }
+
+                if (!settings.Headless)
+                {
+                    // Brief pause before closing driver so user can see final submitted state
+                    Thread.Sleep(1500);
                 }
 
                 Console.ForegroundColor = ConsoleColor.Green;

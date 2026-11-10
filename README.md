@@ -122,8 +122,12 @@ Configuration follows a 3-tier hierarchy:
 2. **Environment Variables**: Overrides config file (e.g., `TARGET_URL`, `BROWSER`, `HEADLESS`)
 3. **`appsettings.json`**: Default project settings
 
-### Supported Browsers & Driver Management
-Configurable in `appsettings.json` or CLI via `Browser`:
+### Supported Browsers & Execution Modes
+Configurable in `appsettings.json` or CLI via `Browser` and `Headless`:
+- **Live Browser Mode (`Headless: false`)**: Launches a visible, interactive desktop browser window (Chrome, Firefox, or Edge) allowing engineers and evaluators to visually watch form discovery, typing, radio selection, dropdown navigation, and submission alerts in real time.
+- **Headless Mode (`Headless: true`)**: Executes headlessly in the background using modern `--headless=new` with zero GUI overhead, optimized for high-speed local runs and Linux CI container environments.
+
+#### Supported Browsers:
 - **`Chrome`** (Google Chrome with modern `--headless=new`, `--no-sandbox`, and `--disable-dev-shm-usage`)
 - **`Firefox`** (Mozilla Firefox via GeckoDriver with headless support)
 - **`Edge`** (Microsoft Edge Chromium with headless support)
@@ -206,37 +210,56 @@ The test suite consists of **42 automated tests** across six categories:
 dotnet build -c Release
 ```
 
-### 5.2 Run the Standalone Automation Runner
+### 5.2 Run the Standalone Automation Runner (Interactive Live Browser & Headless)
 ```powershell
-# Run with default settings (Chrome, GUI mode)
+# Live Browser Mode (DEFAULT: Launches a real, visible Chrome window so you can watch actions live)
 dotnet run
 
-# Run headlessly
+# Live Browser with custom observable delay (e.g., 1000ms between actions)
+dotnet run -- --slow-mo 1000
+
+# Live Browser with a specific browser (Firefox or Edge)
+dotnet run -- --browser Firefox
+dotnet run -- --browser Edge
+
+# Headless Mode (Executes in background without opening a window)
 dotnet run -- --headless true
 
-# Run against a custom URL
+# Run against a custom URL in a live browser
 dotnet run -- "https://app.cloudqa.io/home/AutomationPracticeForm"
 ```
 
-### 5.3 Run Controlled Suites
+### 5.3 Run Live E2E Smoke Tests in a Live Browser
+Watch the tests interact with the live CloudQA Practice Form in a real, visible browser window:
 ```powershell
-# Execute all controlled suites (Resilience, Stale Recovery, SafeClick, Combobox)
-dotnet test --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" -- NUnit.Headless="true"
+# Live Browser Mode (Visible UI)
+dotnet test --filter "Category=E2E" -- NUnit.Headless="false"
+
+# Headless Mode (Background)
+dotnet test --filter "Category=E2E" -- NUnit.Headless="true"
 ```
 
-### 5.4 Run Browser Verification Tests
+### 5.4 Run Controlled Suites (34 Tests)
+```powershell
+# Headless Mode (Fast execution)
+dotnet test --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" -- NUnit.Headless="true"
+
+# Live Browser Mode (Visually observe DOM mutation handling)
+dotnet test --filter "Category=Resilience | Category=StaleRecovery | Category=SafeClick | Category=CustomCombobox" -- NUnit.Headless="false"
+```
+
+### 5.5 Run Browser Verification Tests
 ```powershell
 dotnet test --filter "Category=BrowserVerification" -- NUnit.Headless="true"
 ```
 
-### 5.5 Run Live E2E Smoke Tests
-```powershell
-dotnet test --filter "Category=E2E" -- NUnit.Headless="true"
-```
-
 ### 5.6 Run Complete Test Suite (42 Tests)
 ```powershell
+# Headless Mode (Standard CI & Local Verification)
 dotnet test -c Release -- NUnit.Headless="true"
+
+# Live Browser Mode (All 42 tests in visible browser windows)
+dotnet test -c Release -- NUnit.Headless="false"
 ```
 
 ---
